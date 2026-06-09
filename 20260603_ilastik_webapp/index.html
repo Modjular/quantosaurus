@@ -76,8 +76,11 @@
         </div>
 
         <div class="control-group">
-            <label>Brush Size</label>
-            <input type="number" id="brushSize" value="5" min="1" max="50">
+            <label>Brush Size & Eraser</label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="number" id="brushSize" value="5" min="1" max="50" step=1 style="width: 60px;">
+                <button id="btnEraser" style="flex: 1; background: #444; padding: 8px;">Eraser: OFF</button>
+            </div>
         </div>
 
         <div class="control-group">
@@ -108,7 +111,6 @@
     </div>
 </div>
 
-<script src="utif.js"></script>
 <script type="module">
     import { FlatRandomForest } from './rf.js';
     import { WebGpuBackend } from "./backends/webgpu.js";
@@ -126,7 +128,8 @@
         // Camera & Panning State
         camera: { x: 0, y: 0, scale: 1 },
         isSpaceDown: false,
-        isPanning: false
+        isPanning: false,
+        isEraser: false,
     };
 
     function init() {
@@ -219,6 +222,13 @@
                 await img.backend.updateFeatures(img.intensityArray, state.sigma);
             }
             if (state.liveUpdate) trainAndPredictAll();
+        };
+
+        const btnEraser = document.getElementById('btnEraser');
+        btnEraser.onclick = () => {
+            state.isEraser = !state.isEraser;
+            btnEraser.innerText = state.isEraser ? "Eraser: ON" : "Eraser: OFF";
+            btnEraser.style.background = state.isEraser ? "#e51400" : "#444";
         };
 
         document.querySelectorAll('.class-item').forEach(el => {
@@ -315,21 +325,46 @@
     }
 
     function paint(e, imgState) {
-        // getBoundingClientRect handles CSS scale automatically, 
-        // so no complex coordinate math is required here!
+        // NOTE: getBoundingClientRect handles CSS scale automatically; no complex math needed.
         const rect = imgState.labelCanvas.getBoundingClientRect();
         const x = Math.floor((e.clientX - rect.left) * (imgState.width / rect.width));
         const y = Math.floor((e.clientY - rect.top) * (imgState.height / rect.height));
         const radius = parseInt(document.getElementById('brushSize').value);
+        const r2 = radius * radius;
         
         const ctx = imgState.labelCanvas.getContext('2d');
-        ctx.fillStyle = state.currentClass === 0 ? 'rgba(255,0,0,0.5)' : 'rgba(0,255,0,0.5)';
-        ctx.beginPath(); 
-        ctx.arc(x, y, radius, 0, Math.PI*2); 
-        ctx.fill();
 
-        if (x >= 0 && x < imgState.width && y >= 0 && y < imgState.height) {
-            imgState.labels.push({x, y, cls: state.currentClass});
+        if (state.isEraser) {
+            // 1. Visually erase from the canvas
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.beginPath(); 
+            ctx.arc(x, y, radius, 0, Math.PI*2); 
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over'; // Reset to default
+
+            // 2. Logically erase from the dataset (Highly optimized in-place removal)
+            let writeIdx = 0;
+            for (let i = 0; i < imgState.labels.length; i++) {
+                const l = imgState.labels[i];
+                const dx = l.x - x;
+                const dy = l.y - y;
+                // If the point is OUTSIDE the brush radius, keep it
+                if ((dx * dx + dy * dy) > r2) {
+                    imgState.labels[writeIdx++] = l;
+                }
+            }
+            imgState.labels.length = writeIdx; // Truncate the array
+
+        } else {
+            // Standard Painting
+            ctx.fillStyle = state.currentClass === 0 ? 'rgba(255,0,0,0.5)' : 'rgba(0,255,0,0.5)';
+            ctx.beginPath(); 
+            ctx.arc(x, y, radius, 0, Math.PI*2); 
+            ctx.fill();
+
+            if (x >= 0 && x < imgState.width && y >= 0 && y < imgState.height) {
+                imgState.labels.push({x, y, cls: state.currentClass});
+            }
         }
     }
 
