@@ -94,10 +94,34 @@
                     <div class="color-box" style="background: green;"></div>
                     <span>Class 2</span>
                 </div>
+                <div class="class-item" data-class="1">
+                    <div class="color-box" style="background: blue;"></div>
+                    <span>Class 3</span>
+                </div>
             </div>
         </div>
 
         <button id="btnTrain" disabled>Live Update Off</button>
+        
+        <div class="control-group" style="margin-top: 10px; border-top: 1px solid #3d3d3d; padding-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+            <label>Export Images</label>
+            <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
+                <label style="display: flex; align-items: center; gap: 6px; text-transform: none; color: #eee; font-weight: normal; letter-spacing: 0; cursor: pointer;">
+                    <input type="checkbox" id="chkExportSeg" checked> Segmentations
+                </label>
+                <label style="display: flex; align-items: center; gap: 6px; text-transform: none; color: #eee; font-weight: normal; letter-spacing: 0; cursor: pointer;">
+                    <input type="checkbox" id="chkExportProb"> Probabilities
+                </label>
+            </div>
+            
+            <div style="font-size: 11px; color: #aaa; display: flex; flex-direction: column; gap: 6px;">
+                <div id="dirStatus" style="word-break: break-all; color: #888;">Destination: ZIP download (default)</div>
+                <button id="btnSetDir" style="background: #3a3a3a; font-size: 11px; padding: 6px; width: 100%;">Set Output Folder</button>
+            </div>
+
+            <button id="btnExportAll" disabled style="background: #28a745; margin-top: 4px; padding: 8px; font-size: 12px;">Export Loaded Images</button>
+        </div>
+
         <div style="font-size:11px; color:#666; line-height:1.4;">
             1. Drag & drop images.<br>
             2. Paint labels (Red/Green).<br>
@@ -115,6 +139,7 @@
     import { FlatRandomForest } from './rf.js';
     import { WebGpuBackend } from "./backends/webgpu.js";
     import { loadFileIntoArray } from "./backends/utils.js";
+    import { writeImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
 
     const state = {
         images: [],
@@ -131,6 +156,8 @@
         isPanning: false,
         isEraser: false,
     };
+
+    let outputDirHandle = null;
 
     function init() {
         setupUI();
@@ -257,6 +284,168 @@
             document.body.classList.remove('panning');
             if (state.liveUpdate) trainAndPredictAll();
         });
+
+        // Directory Selection UI setup
+        const btnSetDir = document.getElementById('btnSetDir');
+        const dirStatus = document.getElementById('dirStatus');
+
+        if (!('showDirectoryPicker' in window)) {
+            btnSetDir.style.display = 'none';
+            dirStatus.innerText = "Destination: ZIP download (Folder API not supported)";
+        } else {
+            btnSetDir.onclick = async () => {
+                try {
+                    outputDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                    dirStatus.innerText = `Destination: /${outputDirHandle.name}/`;
+                    dirStatus.style.color = '#4CAF50';
+                } catch (err) {
+                    console.warn(err);
+                }
+            };
+        }
+
+        // Export button setup
+        const btnExport = document.getElementById('btnExportAll');
+        btnExport.onclick = async () => {
+            const exportSeg = document.getElementById('chkExportSeg').checked;
+            const exportProb = document.getElementById('chkExportProb').checked;
+
+            if (!exportSeg && !exportProb) {
+                alert("Please select at least one export option (Segmentations or Probabilities).");
+                return;
+            }
+
+            let totalLabels = 0;
+            state.images.forEach(img => totalLabels += img.labels.length);
+            if (totalLabels < 5) {
+                alert("Please paint at least 5 labels across your images to train the model before exporting.");
+                return;
+            }
+
+            const originalText = btnExport.innerText;
+            btnExport.disabled = true;
+            const originalBackground = btnExport.style.background;
+            btnExport.style.background = '#888';
+
+            try {
+                // Ensure model is trained on current labels
+                btnExport.innerText = "Training model...";
+                await trainAndPredictAll();
+
+                let zip = null;
+                if (!outputDirHandle) {
+                    btnExport.innerText = "Loading ZIP library...";
+                    const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
+                    zip = new JSZip();
+                } else {
+                    const permission = await verifyPermission(outputDirHandle, true);
+                    if (!permission) {
+                        throw new Error("Permission to write to output directory was denied.");
+                    }
+                }
+
+                for (let i = 0; i < state.images.length; i++) {
+                    const img = state.images[i];
+                    btnExport.innerText = `Exporting (${i + 1}/${state.images.length})...`;
+
+                    // Run inference to ensure textures/buffers are updated
+                    await img.backend.runInference(state.rf);
+
+                    const probs = await downloadProbabilities(img.backend);
+                    const w = img.width;
+                    const h = img.height;
+                    const baseName = img.name ? img.name.replace(/\.[^/.]+$/, "") : `image_${i}`;
+
+                    const createTiffBlob = async (image) => {
+                        const { serializedImage } = await writeImage(image, `${image.name}.tif`);
+                        return new Blob([serializedImage.data], { type: 'image/tiff' });
+                    };
+
+                    if (exportSeg) {
+                        const dataUint8Array = new Uint8Array(w * h);
+                        for (let j = 0; j < probs.length; j++) {
+                            dataUint8Array[j] = probs[j] >= 0.5 ? 255 : 0;
+                        }
+
+                        const itkImage = {
+                            imageType: {
+                                dimension: 2,
+                                pixelType: 'Scalar',
+                                componentType: 'uint8',
+                                components: 1
+                            },
+                            name: `${baseName}_segmentation`,
+                            origin: [0.0, 0.0],
+                            spacing: [1.0, 1.0],
+                            direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
+                            size: [w, h],
+                            metadata: new Map(),
+                            data: dataUint8Array
+                        };
+
+                        const blob = await createTiffBlob(itkImage);
+                        const filename = `${baseName}_segmentation.tif`;
+                        if (outputDirHandle) {
+                            await writeFile(outputDirHandle, filename, blob);
+                        } else {
+                            zip.file(filename, blob);
+                        }
+                    }
+
+                    if (exportProb) {
+                        const dataFloat32Array = new Float32Array(w * h * 2);
+                        for (let j = 0; j < probs.length; j++) {
+                            const p = Math.max(0, Math.min(1, probs[j]));
+                            dataFloat32Array[j * 2] = p;
+                            dataFloat32Array[j * 2 + 1] = 1.0 - p;
+                        }
+
+                        const itkImage = {
+                            imageType: {
+                                dimension: 2,
+                                pixelType: 'Vector',
+                                componentType: 'float32',
+                                components: 2
+                            },
+                            name: `${baseName}_probabilities`,
+                            origin: [0.0, 0.0],
+                            spacing: [1.0, 1.0],
+                            direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
+                            size: [w, h],
+                            metadata: new Map(),
+                            data: dataFloat32Array
+                        };
+
+                        const blob = await createTiffBlob(itkImage);
+                        const filename = `${baseName}_probabilities.tif`;
+                        if (outputDirHandle) {
+                            await writeFile(outputDirHandle, filename, blob);
+                        } else {
+                            zip.file(filename, blob);
+                        }
+                    }
+                }
+
+                if (zip) {
+                    btnExport.innerText = "Creating ZIP...";
+                    const content = await zip.generateAsync({ type: "blob" });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(content);
+                    link.download = "ilastik_export.zip";
+                    link.click();
+                    URL.revokeObjectURL(link.href);
+                }
+
+                alert("All images exported successfully!");
+            } catch (err) {
+                console.error(err);
+                alert(`Export failed: ${err.message}`);
+            } finally {
+                btnExport.disabled = false;
+                btnExport.style.background = originalBackground;
+                updateExportButtonCount();
+            }
+        };
     }
 
     async function handleFiles(files) {
@@ -303,7 +492,7 @@
         await backend.updateFeatures(intensityArray, state.sigma);
 
         const imgState = {
-            id: imgId, backend, width: w, height: h,
+            id: imgId, name: file.name, backend, width: w, height: h,
             intensityArray, labels: [], gpuCanvas, labelCanvas, container
         };
         state.images.push(imgState);
@@ -322,6 +511,7 @@
 
         document.getElementById('status').innerText = `Loaded ${state.images.length} image(s)`;
         document.getElementById('btnTrain').disabled = false;
+        updateExportButtonCount();
     }
 
     function paint(e, imgState) {
@@ -405,6 +595,57 @@
         
         for (const img of state.images) {
             await img.backend.runInference(state.rf);
+        }
+    }
+
+    async function downloadProbabilities(backend) {
+        const outSize = backend.width * backend.height;
+        const rb = backend.device.createBuffer({
+            size: outSize * 4,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+
+        const enc = backend.device.createCommandEncoder();
+        enc.copyBufferToBuffer(backend.probBuffer, 0, rb, 0, outSize * 4);
+        backend.device.queue.submit([enc.finish()]);
+
+        await rb.mapAsync(GPUMapMode.READ);
+        const res = new Float32Array(rb.getMappedRange().slice());
+        rb.unmap();
+        rb.destroy();
+        
+        return res;
+    }
+
+    async function verifyPermission(fileHandle, readWrite) {
+        const options = {};
+        if (readWrite) {
+            options.mode = 'readwrite';
+        }
+        if ((await fileHandle.queryPermission(options)) === 'granted') {
+            return true;
+        }
+        if ((await fileHandle.requestPermission(options)) === 'granted') {
+            return true;
+        }
+        return false;
+    }
+
+    async function writeFile(folderHandle, filename, blob) {
+        const fileHandle = await folderHandle.getFileHandle(filename, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+    }
+
+    function updateExportButtonCount() {
+        const btn = document.getElementById('btnExportAll');
+        if (state.images.length > 0) {
+            btn.innerText = `Export Loaded Images (${state.images.length})`;
+            btn.disabled = false;
+        } else {
+            btn.innerText = `Export Loaded Images`;
+            btn.disabled = true;
         }
     }
 
