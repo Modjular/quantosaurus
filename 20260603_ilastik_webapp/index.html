@@ -138,8 +138,7 @@
 <script type="module">
     import { FlatRandomForest } from './rf.js';
     import { WebGpuBackend } from "./backends/webgpu.js";
-    import { loadFileIntoArray } from "./backends/utils.js";
-    import { writeImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
+    import { loadFileIntoArray, verifyPermission, writeFile, buildTrainingDataset, eraseLabelsInRadius, exportImagesData } from "./backends/utils.js";
 
     const state = {
         images: [],
@@ -234,11 +233,11 @@
     }
 
     function setupUI() {
-        const btn = document.getElementById('btnTrain');
-        btn.onclick = () => {
+        const btnTrain = document.getElementById('btnTrain');
+        btnTrain.onclick = () => {
             state.liveUpdate = !state.liveUpdate;
-            btn.innerText = state.liveUpdate ? "Live Update On" : "Live Update Off";
-            btn.style.background = state.liveUpdate ? "#4CAF50" : "#007acc";
+            btnTrain.innerText = state.liveUpdate ? "Live Update On" : "Live Update Off";
+            btnTrain.style.background = state.liveUpdate ? "#4CAF50" : "#007acc";
             if (state.liveUpdate) trainAndPredictAll();
         };
 
@@ -315,126 +314,28 @@
                 return;
             }
 
-            let totalLabels = 0;
-            state.images.forEach(img => totalLabels += img.labels.length);
+            const totalLabels = state.images.reduce((sum, img) => sum + img.labels.length, 0);
             if (totalLabels < 5) {
                 alert("Please paint at least 5 labels across your images to train the model before exporting.");
                 return;
             }
 
-            const originalText = btnExport.innerText;
-            btnExport.disabled = true;
             const originalBackground = btnExport.style.background;
+            btnExport.disabled = true;
             btnExport.style.background = '#888';
 
             try {
-                // Ensure model is trained on current labels
                 btnExport.innerText = "Training model...";
                 await trainAndPredictAll();
 
-                let zip = null;
-                if (!outputDirHandle) {
-                    btnExport.innerText = "Loading ZIP library...";
-                    const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
-                    zip = new JSZip();
-                } else {
-                    const permission = await verifyPermission(outputDirHandle, true);
-                    if (!permission) {
-                        throw new Error("Permission to write to output directory was denied.");
-                    }
-                }
-
-                for (let i = 0; i < state.images.length; i++) {
-                    const img = state.images[i];
-                    btnExport.innerText = `Exporting (${i + 1}/${state.images.length})...`;
-
-                    // Run inference to ensure textures/buffers are updated
-                    await img.backend.runInference(state.rf);
-
-                    const probs = await downloadProbabilities(img.backend);
-                    const w = img.width;
-                    const h = img.height;
-                    const baseName = img.name ? img.name.replace(/\.[^/.]+$/, "") : `image_${i}`;
-
-                    const createTiffBlob = async (image) => {
-                        const { serializedImage } = await writeImage(image, `${image.name}.tif`);
-                        return new Blob([serializedImage.data], { type: 'image/tiff' });
-                    };
-
-                    if (exportSeg) {
-                        const dataUint8Array = new Uint8Array(w * h);
-                        for (let j = 0; j < probs.length; j++) {
-                            dataUint8Array[j] = probs[j] >= 0.5 ? 255 : 0;
-                        }
-
-                        const itkImage = {
-                            imageType: {
-                                dimension: 2,
-                                pixelType: 'Scalar',
-                                componentType: 'uint8',
-                                components: 1
-                            },
-                            name: `${baseName}_segmentation`,
-                            origin: [0.0, 0.0],
-                            spacing: [1.0, 1.0],
-                            direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
-                            size: [w, h],
-                            metadata: new Map(),
-                            data: dataUint8Array
-                        };
-
-                        const blob = await createTiffBlob(itkImage);
-                        const filename = `${baseName}_segmentation.tif`;
-                        if (outputDirHandle) {
-                            await writeFile(outputDirHandle, filename, blob);
-                        } else {
-                            zip.file(filename, blob);
-                        }
-                    }
-
-                    if (exportProb) {
-                        const dataFloat32Array = new Float32Array(w * h * 2);
-                        for (let j = 0; j < probs.length; j++) {
-                            const p = Math.max(0, Math.min(1, probs[j]));
-                            dataFloat32Array[j * 2] = p;
-                            dataFloat32Array[j * 2 + 1] = 1.0 - p;
-                        }
-
-                        const itkImage = {
-                            imageType: {
-                                dimension: 2,
-                                pixelType: 'Vector',
-                                componentType: 'float32',
-                                components: 2
-                            },
-                            name: `${baseName}_probabilities`,
-                            origin: [0.0, 0.0],
-                            spacing: [1.0, 1.0],
-                            direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
-                            size: [w, h],
-                            metadata: new Map(),
-                            data: dataFloat32Array
-                        };
-
-                        const blob = await createTiffBlob(itkImage);
-                        const filename = `${baseName}_probabilities.tif`;
-                        if (outputDirHandle) {
-                            await writeFile(outputDirHandle, filename, blob);
-                        } else {
-                            zip.file(filename, blob);
-                        }
-                    }
-                }
-
-                if (zip) {
-                    btnExport.innerText = "Creating ZIP...";
-                    const content = await zip.generateAsync({ type: "blob" });
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(content);
-                    link.download = "ilastik_export.zip";
-                    link.click();
-                    URL.revokeObjectURL(link.href);
-                }
+                btnExport.innerText = "Exporting...";
+                await exportImagesData(state.images, state.rf, {
+                    exportSeg,
+                    exportProb,
+                    outputDirHandle,
+                    verifyPermission,
+                    writeFile
+                });
 
                 alert("All images exported successfully!");
             } catch (err) {
@@ -503,6 +404,7 @@
             state.activeImageId = imgId;
             paint(e, imgState); 
         };
+        
         labelCanvas.onmousemove = (e) => {
             if (state.isDrawing && state.activeImageId === imgId && !state.isSpaceDown) {
                 paint(e, imgState);
@@ -520,7 +422,6 @@
         const x = Math.floor((e.clientX - rect.left) * (imgState.width / rect.width));
         const y = Math.floor((e.clientY - rect.top) * (imgState.height / rect.height));
         const radius = parseInt(document.getElementById('brushSize').value);
-        const r2 = radius * radius;
         
         const ctx = imgState.labelCanvas.getContext('2d');
 
@@ -530,21 +431,9 @@
             ctx.beginPath(); 
             ctx.arc(x, y, radius, 0, Math.PI*2); 
             ctx.fill();
-            ctx.globalCompositeOperation = 'source-over'; // Reset to default
+            ctx.globalCompositeOperation = 'source-over'; 
 
-            // 2. Logically erase from the dataset (Highly optimized in-place removal)
-            let writeIdx = 0;
-            for (let i = 0; i < imgState.labels.length; i++) {
-                const l = imgState.labels[i];
-                const dx = l.x - x;
-                const dy = l.y - y;
-                // If the point is OUTSIDE the brush radius, keep it
-                if ((dx * dx + dy * dy) > r2) {
-                    imgState.labels[writeIdx++] = l;
-                }
-            }
-            imgState.labels.length = writeIdx; // Truncate the array
-
+            imgState.labels = eraseLabelsInRadius(imgState.labels, x, y, radius);
         } else {
             // Standard Painting
             ctx.fillStyle = state.currentClass === 0 ? 'rgba(255,0,0,0.5)' : 'rgba(0,255,0,0.5)';
@@ -559,83 +448,16 @@
     }
 
     async function trainAndPredictAll() {
-        let totalLabels = 0;
-        state.images.forEach(img => totalLabels += img.labels.length);
+        let totalLabels = state.images.reduce((sum, img) => sum + img.labels.length, 0);
         if (totalLabels < 5) return;
 
-        const allX = [];
-        const yArray = new Int32Array(totalLabels);
-        let currentLabelOffset = 0;
-
-        for (const img of state.images) {
-            const numLabels = img.labels.length;
-            if (numLabels === 0) continue;
-
-            const indicesArray = new Uint32Array(numLabels);
-            for (let i = 0; i < numLabels; i++) {
-                const l = img.labels[i];
-                indicesArray[i] = l.y * img.width + l.x;
-                yArray[currentLabelOffset + i] = l.cls;
-            }
-
-            const X_img = await img.backend.gatherFeaturesForTraining(indicesArray);
-            allX.push(X_img);
-            currentLabelOffset += numLabels;
-        }
-
-        const totalFeatureLength = allX.reduce((sum, arr) => sum + arr.length, 0);
-        const combinedX = new Float32Array(totalFeatureLength);
-        let xOffset = 0;
-        for (const arr of allX) {
-            combinedX.set(arr, xOffset);
-            xOffset += arr.length;
-        }
-
+        const { combinedX, yArray } = await buildTrainingDataset(state.images, totalLabels);
+        
         state.rf.train(combinedX, yArray, 8);
         
         for (const img of state.images) {
             await img.backend.runInference(state.rf);
         }
-    }
-
-    async function downloadProbabilities(backend) {
-        const outSize = backend.width * backend.height;
-        const rb = backend.device.createBuffer({
-            size: outSize * 4,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-        });
-
-        const enc = backend.device.createCommandEncoder();
-        enc.copyBufferToBuffer(backend.probBuffer, 0, rb, 0, outSize * 4);
-        backend.device.queue.submit([enc.finish()]);
-
-        await rb.mapAsync(GPUMapMode.READ);
-        const res = new Float32Array(rb.getMappedRange().slice());
-        rb.unmap();
-        rb.destroy();
-        
-        return res;
-    }
-
-    async function verifyPermission(fileHandle, readWrite) {
-        const options = {};
-        if (readWrite) {
-            options.mode = 'readwrite';
-        }
-        if ((await fileHandle.queryPermission(options)) === 'granted') {
-            return true;
-        }
-        if ((await fileHandle.requestPermission(options)) === 'granted') {
-            return true;
-        }
-        return false;
-    }
-
-    async function writeFile(folderHandle, filename, blob) {
-        const fileHandle = await folderHandle.getFileHandle(filename, { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
     }
 
     function updateExportButtonCount() {
