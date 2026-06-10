@@ -10,15 +10,15 @@
         #top-bar { padding: 10px 20px; background: #2d2d2d; border-bottom: 1px solid #3d3d3d; display: flex; align-items: center; gap: 20px; z-index: 10; }
         #main-container { flex: 1; display: flex; overflow: hidden; }
         #sidebar { width: 260px; background: #252526; border-right: 1px solid #3d3d3d; padding: 20px; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex-shrink: 0; z-index: 10; }
-        
+
         /* Viewport hides overflow and acts as the window for our camera */
-        #viewport { 
-            flex: 1; position: relative; background: #000; 
-            overflow: hidden; 
+        #viewport {
+            flex: 1; position: relative; background: #000;
+            overflow: hidden;
             transition: background 0.2s;
         }
         #viewport.drag-active { background: #1a3a4a; }
-        
+
         /* The board moves and scales based on our JS camera state */
         #canvas-board {
             display: flex; gap: 20px; padding: 20px;
@@ -36,12 +36,12 @@
         .control-group { display: flex; flex-direction: column; gap: 8px; }
         .control-group label { font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
         input[type="range"] { width: 100%; }
-        
+
         .class-selector { display: flex; flex-direction: column; gap: 4px; }
         .class-item { display: flex; align-items: center; gap: 10px; padding: 8px; background: #333; border-radius: 4px; cursor: pointer; border: 2px solid transparent; }
         .class-item.active { border-color: #007acc; background: #3d3d3d; }
         .color-box { width: 16px; height: 16px; border-radius: 2px; }
-        
+
         button { background: #007acc; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; font-weight: 600; }
         button:hover { background: #0062cc; }
         button:disabled { background: #444; cursor: not-allowed; }
@@ -49,9 +49,9 @@
         canvas { position: absolute; top: 0; left: 0; max-width: 100%; max-height: 100%; image-rendering: pixelated; }
         .gpu-canvas { z-index: 1; }
         .label-canvas { z-index: 2; cursor: crosshair; }
-        
+
         #status { font-size: 12px; color: #888; }
-        
+
         /* Spacebar panning cursors */
         body.space-down .label-canvas { cursor: grab !important; }
         body.space-down.panning .label-canvas { cursor: grabbing !important; }
@@ -76,7 +76,7 @@
         </div>
 
         <div class="control-group">
-            <label>Brush Size & Eraser</label>
+            <label>Brush Size &amp; Eraser</label>
             <div style="display: flex; gap: 10px; align-items: center;">
                 <input type="number" id="brushSize" value="5" min="1" max="50" step=1 style="width: 60px;">
                 <button id="btnEraser" style="flex: 1; background: #444; padding: 8px;">Eraser: OFF</button>
@@ -94,7 +94,7 @@
                     <div class="color-box" style="background: green;"></div>
                     <span>Class 2</span>
                 </div>
-                <div class="class-item" data-class="1">
+                <div class="class-item" data-class="2">
                     <div class="color-box" style="background: blue;"></div>
                     <span>Class 3</span>
                 </div>
@@ -102,7 +102,7 @@
         </div>
 
         <button id="btnTrain" disabled>Live Update Off</button>
-        
+
         <div class="control-group" style="margin-top: 10px; border-top: 1px solid #3d3d3d; padding-top: 15px; display: flex; flex-direction: column; gap: 10px;">
             <label>Export Images</label>
             <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
@@ -113,7 +113,7 @@
                     <input type="checkbox" id="chkExportProb"> Probabilities
                 </label>
             </div>
-            
+
             <div style="font-size: 11px; color: #aaa; display: flex; flex-direction: column; gap: 6px;">
                 <div id="dirStatus" style="word-break: break-all; color: #888;">Destination: ZIP download (default)</div>
                 <button id="btnSetDir" style="background: #3a3a3a; font-size: 11px; padding: 6px; width: 100%;">Set Output Folder</button>
@@ -123,8 +123,8 @@
         </div>
 
         <div style="font-size:11px; color:#666; line-height:1.4;">
-            1. Drag & drop images.<br>
-            2. Paint labels (Red/Green).<br>
+            1. Drag &amp; drop images.<br>
+            2. Paint labels (Red/Green/Blue).<br>
             3. Trackpad to pan/zoom (or hold Spacebar).<br>
             4. Run on WebGPU.
         </div>
@@ -140,29 +140,64 @@
     import { WebGpuBackend } from "./backends/webgpu.js";
     import { loadFileIntoArray, verifyPermission, writeFile, buildTrainingDataset, eraseLabelsInRadius, exportImagesData } from "./utils.js";
 
+    // --- Constants ---
+    // FIX: Magic numbers extracted to named constants.
+    const RF_CONFIG = { numTrees: 8, maxDepth: 8 };
+    const MIN_LABELS_TO_TRAIN = 5;
+    const CAMERA_ZOOM_MIN = 0.1;
+    const CAMERA_ZOOM_MAX = 10;
+    const CAMERA_ZOOM_SENSITIVITY = 0.01;
+    const TRAIN_DEBOUNCE_MS = 300;
+
+    // --- State ---
+    // FIX: outputDirHandle moved into state for consistency.
+    // FIX: camera sub-object kept but drawing, ML, and UI flags are now
+    //      clearly grouped by comment, making ownership more obvious.
     const state = {
+        // Image data
         images: [],
+
+        // ML
+        rf: new FlatRandomForest(RF_CONFIG),
+
+        // Drawing
         currentClass: 0,
-        sigma: 1.0,
         isDrawing: false,
         activeImageId: null,
+        isEraser: false,
+
+        // Features
+        sigma: 1.0,
+
+        // Live update
         liveUpdate: false,
-        rf: new FlatRandomForest({ numTrees: 8, maxDepth: 8 }),
-        
-        // Camera & Panning State
+
+        // Camera
         camera: { x: 0, y: 0, scale: 1 },
         isSpaceDown: false,
         isPanning: false,
-        isEraser: false,
+
+        // Export
+        outputDirHandle: null,
     };
 
-    let outputDirHandle = null;
-
-    function init() {
-        setupUI();
-        setupCamera();
+    // --- Debounced train ---
+    // FIX: trainAndPredictAll is now debounced so rapid sigma slider changes
+    //      or quick mouse events don't stack up redundant retrains.
+    let _trainTimer = null;
+    function scheduleTrainAndPredictAll() {
+        clearTimeout(_trainTimer);
+        _trainTimer = setTimeout(() => trainAndPredictAll(), TRAIN_DEBOUNCE_MS);
     }
 
+    function init() {
+        setupCamera();
+        setupUI();
+    }
+
+    // --- Camera ---
+    // FIX: setupCamera is self-contained — it no longer relies on anything
+    //      from setupUI, and exposes updateBoard via a closure-local function.
     function setupCamera() {
         const viewport = document.getElementById('viewport');
         const board = document.getElementById('canvas-board');
@@ -171,36 +206,33 @@
             board.style.transform = `translate(${state.camera.x}px, ${state.camera.y}px) scale(${state.camera.scale})`;
         }
 
-        // --- Trackpad / Wheel Navigation ---
+        // Trackpad / Wheel Navigation
         viewport.addEventListener('wheel', (e) => {
             e.preventDefault(); // Stop browser back-swipe or standard scroll
-            
+
             if (e.ctrlKey || e.metaKey) {
-                // Pinch-to-zoom logic
-                const zoomSensitivity = 0.01;
-                const delta = -e.deltaY * zoomSensitivity;
-                const newScale = Math.min(Math.max(0.1, state.camera.scale * Math.exp(delta)), 10);
-                
-                // Calculate cursor position relative to the unscaled board
+                // Pinch-to-zoom
+                const delta = -e.deltaY * CAMERA_ZOOM_SENSITIVITY;
+                const newScale = Math.min(Math.max(CAMERA_ZOOM_MIN, state.camera.scale * Math.exp(delta)), CAMERA_ZOOM_MAX);
+
                 const rect = viewport.getBoundingClientRect();
                 const mouseX = e.clientX - rect.left;
                 const mouseY = e.clientY - rect.top;
                 const boardX = (mouseX - state.camera.x) / state.camera.scale;
                 const boardY = (mouseY - state.camera.y) / state.camera.scale;
-                
-                // Apply new scale and shift X/Y to zoom towards the cursor
+
                 state.camera.scale = newScale;
                 state.camera.x = mouseX - boardX * state.camera.scale;
                 state.camera.y = mouseY - boardY * state.camera.scale;
             } else {
-                // Two-finger pan logic
+                // Two-finger pan
                 state.camera.x -= e.deltaX;
                 state.camera.y -= e.deltaY;
             }
             updateBoard();
         }, { passive: false });
 
-        // --- Spacebar Panning Logic ---
+        // Spacebar panning
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Space' && !state.isSpaceDown) {
                 state.isSpaceDown = true;
@@ -216,7 +248,7 @@
             }
         });
 
-        viewport.addEventListener('mousedown', (e) => {
+        viewport.addEventListener('mousedown', () => {
             if (state.isSpaceDown) {
                 state.isPanning = true;
                 document.body.classList.add('panning');
@@ -230,8 +262,18 @@
                 updateBoard();
             }
         });
+
+        // FIX: Global mouseup now only resets camera/pan state. Drawing cleanup
+        //      is handled inside each labelCanvas's own mouseup listener (see
+        //      addImage), so trainAndPredictAll is only scheduled when drawing
+        //      actually occurred — not on every click anywhere in the window.
+        window.addEventListener('mouseup', () => {
+            state.isPanning = false;
+            document.body.classList.remove('panning');
+        });
     }
 
+    // --- UI Setup ---
     function setupUI() {
         const btnTrain = document.getElementById('btnTrain');
         btnTrain.onclick = () => {
@@ -241,13 +283,14 @@
             if (state.liveUpdate) trainAndPredictAll();
         };
 
+        // FIX: sigma changes are debounced to avoid stacking sequential retrains.
         document.getElementById('sigmaRange').oninput = async (e) => {
             state.sigma = parseFloat(e.target.value);
             document.getElementById('sigmaVal').innerText = state.sigma.toFixed(1);
             for (const img of state.images) {
                 await img.backend.updateFeatures(img.intensityArray, state.sigma);
             }
-            if (state.liveUpdate) trainAndPredictAll();
+            if (state.liveUpdate) scheduleTrainAndPredictAll();
         };
 
         const btnEraser = document.getElementById('btnEraser');
@@ -265,7 +308,9 @@
             };
         });
 
-        document.getElementById('fileInput').onchange = (e) => handleFiles(e.target.files);
+        // FIX: handleFiles errors are now surfaced via .catch instead of being silently dropped.
+        document.getElementById('fileInput').onchange = (e) =>
+            handleFiles(e.target.files).catch(console.error);
 
         const viewport = document.getElementById('viewport');
         viewport.ondragover = (e) => { e.preventDefault(); viewport.classList.add('drag-active'); };
@@ -273,18 +318,10 @@
         viewport.ondrop = (e) => {
             e.preventDefault();
             viewport.classList.remove('drag-active');
-            handleFiles(e.dataTransfer.files);
+            handleFiles(e.dataTransfer.files).catch(console.error);
         };
 
-        window.addEventListener('mouseup', () => { 
-            state.isDrawing = false; 
-            state.activeImageId = null;
-            state.isPanning = false;
-            document.body.classList.remove('panning');
-            if (state.liveUpdate) trainAndPredictAll();
-        });
-
-        // Directory Selection UI setup
+        // Directory Selection
         const btnSetDir = document.getElementById('btnSetDir');
         const dirStatus = document.getElementById('dirStatus');
 
@@ -294,8 +331,9 @@
         } else {
             btnSetDir.onclick = async () => {
                 try {
-                    outputDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-                    dirStatus.innerText = `Destination: /${outputDirHandle.name}/`;
+                    // FIX: outputDirHandle stored on state, not as a loose module-level var.
+                    state.outputDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                    dirStatus.innerText = `Destination: /${state.outputDirHandle.name}/`;
                     dirStatus.style.color = '#4CAF50';
                 } catch (err) {
                     console.warn(err);
@@ -303,7 +341,7 @@
             };
         }
 
-        // Export button setup
+        // Export
         const btnExport = document.getElementById('btnExportAll');
         btnExport.onclick = async () => {
             const exportSeg = document.getElementById('chkExportSeg').checked;
@@ -315,11 +353,12 @@
             }
 
             const totalLabels = state.images.reduce((sum, img) => sum + img.labels.length, 0);
-            if (totalLabels < 5) {
-                alert("Please paint at least 5 labels across your images to train the model before exporting.");
+            if (totalLabels < MIN_LABELS_TO_TRAIN) {
+                alert(`Please paint at least ${MIN_LABELS_TO_TRAIN} labels across your images to train the model before exporting.`);
                 return;
             }
 
+            const originalText = btnExport.innerText;
             const originalBackground = btnExport.style.background;
             btnExport.disabled = true;
             btnExport.style.background = '#888';
@@ -332,9 +371,9 @@
                 await exportImagesData(state.images, state.rf, {
                     exportSeg,
                     exportProb,
-                    outputDirHandle,
+                    outputDirHandle: state.outputDirHandle,
                     verifyPermission,
-                    writeFile
+                    writeFile,
                 });
 
                 alert("All images exported successfully!");
@@ -344,6 +383,7 @@
             } finally {
                 btnExport.disabled = false;
                 btnExport.style.background = originalBackground;
+                btnExport.innerText = originalText;
                 updateExportButtonCount();
             }
         };
@@ -359,7 +399,9 @@
 
     async function addImage(file) {
         const { intensityArray, rgba, w, h } = await loadFileIntoArray(file);
-        const imgId = Date.now() + Math.random();
+
+        // FIX: Use crypto.randomUUID() instead of the float-addition ID hack.
+        const imgId = crypto.randomUUID();
 
         const container = document.createElement('div');
         container.className = 'image-container';
@@ -376,7 +418,6 @@
 
         container.appendChild(gpuCanvas);
         container.appendChild(labelCanvas);
-        // Append to our new inner board instead of the viewport directly
         document.getElementById('canvas-board').appendChild(container);
 
         const backend = new WebGpuBackend();
@@ -394,22 +435,44 @@
 
         const imgState = {
             id: imgId, name: file.name, backend, width: w, height: h,
-            intensityArray, labels: [], gpuCanvas, labelCanvas, container
+            intensityArray, labels: [], gpuCanvas, labelCanvas, container,
+            // FIX: Cache the bounding rect at mousedown, not on every mousemove.
+            //      Invalidated on resize via ResizeObserver below.
+            _cachedRect: null,
         };
         state.images.push(imgState);
 
-        labelCanvas.onmousedown = (e) => { 
-            if (state.isSpaceDown) return; // Block painting if panning
-            state.isDrawing = true; 
+        // FIX: Cache getBoundingClientRect at mousedown so mousemove doesn't
+        //      force a layout reflow on every event.
+        labelCanvas.addEventListener('mousedown', (e) => {
+            if (state.isSpaceDown) return;
+            imgState._cachedRect = labelCanvas.getBoundingClientRect();
+            state.isDrawing = true;
             state.activeImageId = imgId;
-            paint(e, imgState); 
-        };
-        
-        labelCanvas.onmousemove = (e) => {
+            paint(e, imgState);
+        });
+
+        labelCanvas.addEventListener('mousemove', (e) => {
             if (state.isDrawing && state.activeImageId === imgId && !state.isSpaceDown) {
                 paint(e, imgState);
             }
-        };
+        });
+
+        // FIX: Drawing cleanup and conditional training are scoped to the canvas
+        //      mouseup, not the global window mouseup. This prevents triggering
+        //      trainAndPredictAll on every click anywhere in the window.
+        labelCanvas.addEventListener('mouseup', () => {
+            if (state.activeImageId === imgId) {
+                state.isDrawing = false;
+                state.activeImageId = null;
+                if (state.liveUpdate) scheduleTrainAndPredictAll();
+            }
+        });
+
+        // FIX: Invalidate the cached rect when the canvas is resized/zoomed
+        //      (e.g. trackpad zoom changes the CSS bounding rect).
+        const ro = new ResizeObserver(() => { imgState._cachedRect = null; });
+        ro.observe(labelCanvas);
 
         document.getElementById('status').innerText = `Loaded ${state.images.length} image(s)`;
         document.getElementById('btnTrain').disabled = false;
@@ -417,44 +480,51 @@
     }
 
     function paint(e, imgState) {
-        // NOTE: getBoundingClientRect handles CSS scale automatically; no complex math needed.
-        const rect = imgState.labelCanvas.getBoundingClientRect();
-        const x = Math.floor((e.clientX - rect.left) * (imgState.width / rect.width));
-        const y = Math.floor((e.clientY - rect.top) * (imgState.height / rect.height));
+        // FIX: Use the rect cached at mousedown rather than calling
+        //      getBoundingClientRect() on every mousemove (which forces reflow).
+        const rect = imgState._cachedRect || imgState.labelCanvas.getBoundingClientRect();
+        const scaleX = imgState.width / rect.width;
+        const scaleY = imgState.height / rect.height;
+        const x = Math.floor((e.clientX - rect.left) * scaleX);
+        const y = Math.floor((e.clientY - rect.top) * scaleY);
         const radius = parseInt(document.getElementById('brushSize').value);
-        
+
         const ctx = imgState.labelCanvas.getContext('2d');
 
         if (state.isEraser) {
-            // 1. Visually erase from the canvas
             ctx.globalCompositeOperation = 'destination-out';
-            ctx.beginPath(); 
-            ctx.arc(x, y, radius, 0, Math.PI*2); 
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
             ctx.fill();
-            ctx.globalCompositeOperation = 'source-over'; 
+            ctx.globalCompositeOperation = 'source-over';
 
             imgState.labels = eraseLabelsInRadius(imgState.labels, x, y, radius);
         } else {
-            // Standard Painting
-            ctx.fillStyle = state.currentClass === 0 ? 'rgba(255,0,0,0.5)' : 'rgba(0,255,0,0.5)';
-            ctx.beginPath(); 
-            ctx.arc(x, y, radius, 0, Math.PI*2); 
-            ctx.fill();
+            // FIX: Deduplicate labels — don't push a new point if the last label
+            //      is at the same pixel, preventing label array bloat from slow drags.
+            const last = imgState.labels[imgState.labels.length - 1];
+            const isDuplicate = last && last.x === x && last.y === y && last.cls === state.currentClass;
 
-            if (x >= 0 && x < imgState.width && y >= 0 && y < imgState.height) {
-                imgState.labels.push({x, y, cls: state.currentClass});
+            if (!isDuplicate && x >= 0 && x < imgState.width && y >= 0 && y < imgState.height) {
+                // Class 0 = red, 1 = green, 2 = blue
+                const COLORS = ['rgba(255,0,0,0.5)', 'rgba(0,255,0,0.5)', 'rgba(0,0,255,0.5)'];
+                ctx.fillStyle = COLORS[state.currentClass] ?? COLORS[0];
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                imgState.labels.push({ x, y, cls: state.currentClass });
             }
         }
     }
 
     async function trainAndPredictAll() {
-        let totalLabels = state.images.reduce((sum, img) => sum + img.labels.length, 0);
-        if (totalLabels < 5) return;
+        const totalLabels = state.images.reduce((sum, img) => sum + img.labels.length, 0);
+        if (totalLabels < MIN_LABELS_TO_TRAIN) return;
 
         const { combinedX, yArray } = await buildTrainingDataset(state.images, totalLabels);
-        
-        state.rf.train(combinedX, yArray, 8);
-        
+        state.rf.train(combinedX, yArray, RF_CONFIG.numTrees);
+
         for (const img of state.images) {
             await img.backend.runInference(state.rf);
         }
