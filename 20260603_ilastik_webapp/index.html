@@ -269,15 +269,6 @@
             <div class="section-header">Train</div>
 
             <div class="control-group">
-                <span class="control-label">Feature Scale (Sigma)</span>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <input type="range" id="sigmaRange" min="0.3" max="10.0"
-                           step="0.1" value="1.0" style="flex:1;">
-                    <span id="sigmaVal" style="min-width:30px; font-size:12px;">1.0</span>
-                </div>
-            </div>
-
-            <div class="control-group">
                 <span class="control-label">Tools &amp; Brush Size</span>
                 <div style="display:flex; gap:10px; align-items:end;">
                     <div style="display:flex; gap:4px; flex:1;">
@@ -285,8 +276,14 @@
                         <button class="tool-btn" data-tool="paint" title="Paint">🖌</button>
                         <button class="tool-btn" data-tool="erase" title="Erase">🧽</button>
                     </div>
-                    <input type="number" id="brushSize" value="5"
-                           min="1" max="50" step="1" style="width:50px;" title="Brush & Eraser Radius">
+                </div>
+            </div>
+
+            <div class="control-group">
+                <span class="control-label">Brush Size</span>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <input type="range" id="brushSizeRange" min="1" max="32" step="1" value="5">
+                    <span id="brushVal" style="min-width:30px; font-size:12px;">5</span>
                 </div>
             </div>
 
@@ -305,6 +302,14 @@
                         <div class="color-box" style="background:blue;"></div>
                         <span>Class 3</span>
                     </div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <span class="control-label">Feature Scale (Sigma)</span>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <input type="range" id="sigmaRange" min="0.3" max="10.0" step="0.1" value="1.0">
+                    <span id="sigmaVal" style="min-width:30px; font-size:12px;">1.0</span>
                 </div>
             </div>
 
@@ -523,6 +528,12 @@
             if (state.liveUpdate) scheduleTrainAndPredictAll();
         };
 
+        // Brush Size
+        document.getElementById('brushSizeRange').oninput = async (e) => {
+            const size = parseInt(document.getElementById('brushSizeRange').value, 10);
+            document.getElementById('brushVal').innerText = size;
+        };
+
         // Tools Setup (Grab, Paint, Erase)
         document.querySelectorAll('.tool-btn').forEach(btn => {
             btn.onclick = () => {
@@ -625,7 +636,7 @@
     async function addImage(file) {
         // ── 1. Create a placeholder row in the sidebar immediately ──────────
         const imgId = crypto.randomUUID();
-        const row   = createImageRow(imgId, file.name, 0, null); // spinner state
+        const row   = createImageRow(imgId, file.name); // spinner state
         row.classList.add('loading');
         document.getElementById('img-empty').style.display = 'none';
         document.getElementById('image-list').appendChild(row);
@@ -750,7 +761,7 @@
 
     // createImageRow — builds the DOM for one entry.
     // imgState is null during the loading placeholder phase.
-    function createImageRow(imgId, name, labelCount, imgState) {
+    function createImageRow(imgId, name) {
         const row = document.createElement('div');
         row.className  = 'img-row';
         row.dataset.id = imgId;
@@ -787,7 +798,6 @@
         const badge = document.createElement('div');
         badge.className = 'img-label-badge';
         badge.dataset.badge = imgId;
-        updateBadge(badge, labelCount);
 
         // Delete button
         const btnDel = document.createElement('button');
@@ -817,6 +827,9 @@
         const sliceEl = document.createElement('div');
         sliceEl.className     = 'img-slice';
         sliceEl.dataset.slice = imgState.id;
+
+        // Update the badge count
+        updateImageStateBadge(imgState);
 
         row.appendChild(axesEl);
         row.appendChild(sliceEl);
@@ -1003,17 +1016,6 @@
         updateExportButtonCount();
     }
 
-    // ── Label badge helper ────────────────────────────────────────────────────
-    function updateBadge(badgeEl, count) {
-        badgeEl.textContent = count === 0 ? 'no labels' : `${count} label${count !== 1 ? 's' : ''}`;
-        badgeEl.classList.toggle('has-labels', count > 0);
-    }
-
-    function refreshBadge(imgState) {
-        const badge = imgState._sidebarRow.querySelector('.img-label-badge');
-        if (badge) updateBadge(badge, imgState.labels.length);
-    }
-
     // ── Painting ──────────────────────────────────────────────────────────────
     function paint(e, imgState) {
         const rect   = imgState._cachedRect || imgState.labelCanvas.getBoundingClientRect();
@@ -1021,42 +1023,46 @@
         const scaleY = imgState.height / rect.height;
         const x      = Math.floor((e.clientX - rect.left) * scaleX);
         const y      = Math.floor((e.clientY - rect.top)  * scaleY);
-        const radius = parseInt(document.getElementById('brushSize').value, 10);
+        const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
         const ctx    = imgState.labelCanvas.getContext('2d');
 
         const pixels = getPixelsInRadius(x, y, radius, imgState.width, imgState.height);
         if (pixels.length === 0) return;
-
-        // Create a Set of "x,y" strings for fast lookups
+        
+        // Use a Set to filter out any labels within new radius
         const pixelSet = new Set(pixels.map(p => `${p.x},${p.y}`));
+        imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
 
-        if (state.toolMode === 'erase') {
+        if (state.toolMode === 'paint') {
+            // Add pixels to canvas
+            // Then add pixels to imgState.labels
+            ctx.fillStyle = LABEL_COLORS[state.currentClass] ?? LABEL_COLORS[0];
+            pixels.forEach(p => ctx.fillRect(p.x, p.y, 1, 1));
+            pixels.forEach(p => imgState.labels.push({ x: p.x, y: p.y, cls: state.currentClass }));
+
+        } else if (state.toolMode === 'erase') {
+            // Erase pixels from canvas
+            // Pixels have already been filtered from imgState.labels
             pixels.forEach(p => ctx.clearRect(p.x, p.y, 1, 1));
-            imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
 
-        } else if (state.toolMode === 'paint') {
-
-          // Remove old labels at these coordinates so we don't stack duplicates
-          imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
-
-          ctx.fillStyle = LABEL_COLORS[state.currentClass] ?? LABEL_COLORS[0];
-          pixels.forEach(p => {
-              ctx.fillRect(p.x, p.y, 1, 1);
-              imgState.labels.push({ x: p.x, y: p.y, cls: state.currentClass });
-          });
+        } else {
+            console.error("Unrecognized toolmmode:", state.toolMode)
         }
 
-        refreshBadge(imgState);
+        updateImageStateBadge(imgState);
     }
 
     // ── Training ──────────────────────────────────────────────────────────────
     async function trainAndPredictAll() {
+        // 1. Gather all labels from all images
         const totalLabels = state.images.reduce((s, i) => s + i.labels.length, 0);
         if (totalLabels < MIN_LABELS_TO_TRAIN) return;
 
+        // 2, Gather labels + features from backend to train the RandomForest
         const { combinedX, yArray } = await buildTrainingDataset(state.images, totalLabels);
         state.rf.train(combinedX, yArray, RF_CONFIG.numTrees);
 
+        // 3. Run inference on all images with the new model
         for (const img of state.images) {
             await img.backend.runInference(state.rf);
         }
@@ -1084,6 +1090,16 @@
     function refreshEmptyState() {
         document.getElementById('img-empty').style.display =
             state.images.length === 0 ? '' : 'none';
+    }
+
+    function updateImageStateBadge(imgState) {
+        const badge = imgState._sidebarRow.querySelector('.img-label-badge');
+        const count = imgState.labels.length
+
+        if (!badge) return
+
+        badge.textContent = count === 0 ? 'no labels' : `${count} label${count !== 1 ? 's' : ''}`;
+        badge.classList.toggle('has-labels', count > 0);
     }
 
     init();
