@@ -113,26 +113,38 @@ export async function buildTrainingDataset(images, totalLabels) {
     return { combinedX, yArray };
 }
 
-/**
- * Filters out labels that fall within the given eraser radius (in-place optimized).
- */
-export function eraseLabelsInRadius(labels, x, y, radius) {
-    const r2 = radius * radius;
-    let writeIdx = 0;
+
+export function getPixelsInRadius(cx, cy, radius, width, height) {
+    const pixels = [];
     
-    for (let i = 0; i < labels.length; i++) {
-        const l = labels[i];
-        const dx = l.x - x;
-        const dy = l.y - y;
-        
-        // If the point is OUTSIDE the brush radius, keep it
-        if ((dx * dx + dy * dy) > r2) {
-            labels[writeIdx++] = l;
+    // Exact 1-pixel brush
+    if (radius === 1) {
+        if (cx >= 0 && cx < width && cy >= 0 && cy < height) {
+            pixels.push({ x: cx, y: cy });
+        }
+        return pixels;
+    }
+    
+    const rSq = radius * radius;
+    const rInt = Math.ceil(radius);
+    
+    // Check a bounding box around the center
+    for (let y = cy - rInt; y <= cy + rInt; y++) {
+        for (let x = cx - rInt; x <= cx + rInt; x++) {
+            // Keep it inside canvas bounds
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                const dx = x - cx;
+                const dy = y - cy;
+                
+                // If distance squared is within radius squared, it's inside the circle
+                if (dx * dx + dy * dy <= rSq) {
+                    pixels.push({ x, y });
+                }
+            }
         }
     }
     
-    labels.length = writeIdx; // Truncate the array
-    return labels;
+    return pixels;
 }
 
 /**

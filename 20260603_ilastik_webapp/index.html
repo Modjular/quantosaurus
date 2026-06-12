@@ -368,7 +368,7 @@
         verifyPermission,
         writeFile,
         buildTrainingDataset,
-        eraseLabelsInRadius,
+        getPixelsInRadius,
         exportImagesData,
         inferAxes,
         pickSlice,
@@ -383,9 +383,9 @@
     const CAMERA_ZOOM_SENSITIVITY = 0.01;
     const TRAIN_DEBOUNCE_MS     = 300;
     const LABEL_COLORS          = [
-        'rgba(255,0,0,0.5)',
-        'rgba(0,255,0,0.5)',
-        'rgba(0,0,255,0.5)',
+        'rgba(255,0,0,1.0)',
+        'rgba(0,255,0,1.0)',
+        'rgba(0,0,255,1.0)',
     ];
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -612,13 +612,13 @@
     // ── File ingestion ────────────────────────────────────────────────────────
     async function handleFiles(files) {
         for (const file of files) {
-            if (!file.name.match(/\.(tif|tiff|png|jpg|jpeg)$/i)) continue;
-            // Deduplicate: skip if same name+size already loaded
-            if (isDuplicateFile(file, state.images)) {
-                console.info(`Skipping duplicate: ${file.name}`);
-                continue;
+            const validFileTypes = ['.tif','.tiff','.png','.jpg','.jpeg']
+            const isValidFileType = validFileTypes.some((filetype) => file.name.endsWith(filetype))
+            const isDuplicate = state.images.some(img => img.name === file.name && img.fileSize === file.size)
+
+            if (!isDuplicate && isValidFileType) {
+                await addImage(file);
             }
-            await addImage(file);
         }
     }
 
@@ -1024,20 +1024,26 @@
         const radius = parseInt(document.getElementById('brushSize').value, 10);
         const ctx    = imgState.labelCanvas.getContext('2d');
 
-        if (state.toolMode === 'erase') {
-            ctx.globalCompositeOperation = 'destination-out';
-            ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
-            ctx.globalCompositeOperation = 'source-over';
-            imgState.labels = eraseLabelsInRadius(imgState.labels, x, y, radius);
-        } else if (state.toolMode === 'paint') {
-            const last = imgState.labels[imgState.labels.length - 1];
-            const isDup = last && last.x === x && last.y === y && last.cls === state.currentClass;
+        const pixels = getPixelsInRadius(x, y, radius, imgState.width, imgState.height);
+        if (pixels.length === 0) return;
 
-            if (!isDup && x >= 0 && x < imgState.width && y >= 0 && y < imgState.height) {
-                ctx.fillStyle = LABEL_COLORS[state.currentClass] ?? LABEL_COLORS[0];
-                ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
-                imgState.labels.push({ x, y, cls: state.currentClass });
-            }
+        // Create a Set of "x,y" strings for fast lookups
+        const pixelSet = new Set(pixels.map(p => `${p.x},${p.y}`));
+
+        if (state.toolMode === 'erase') {
+            pixels.forEach(p => ctx.clearRect(p.x, p.y, 1, 1));
+            imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
+
+        } else if (state.toolMode === 'paint') {
+
+          // Remove old labels at these coordinates so we don't stack duplicates
+          imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
+
+          ctx.fillStyle = LABEL_COLORS[state.currentClass] ?? LABEL_COLORS[0];
+          pixels.forEach(p => {
+              ctx.fillRect(p.x, p.y, 1, 1);
+              imgState.labels.push({ x: p.x, y: p.y, cls: state.currentClass });
+          });
         }
 
         refreshBadge(imgState);
