@@ -66,12 +66,23 @@
         }
         button:hover:not(:disabled) { background: #0062cc; }
         button:disabled { background: #3a3a3a; color: #666; cursor: not-allowed; }
+        
         .btn-danger  { background: #c0392b; }
         .btn-danger:hover:not(:disabled)  { background: #a93226; }
         .btn-subtle  { background: #3a3a3a; }
         .btn-subtle:hover:not(:disabled)  { background: #444; }
         .btn-success { background: #28a745; }
         .btn-success:hover:not(:disabled) { background: #218838; }
+
+        /* Tools / Brush Buttons */
+        .tool-btn {
+            background: #333; color: #eee; border: 1px solid #555;
+            padding: 4px 0; font-size: 16px; border-radius: 3px;
+            flex: 1; cursor: pointer; transition: background 0.15s;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .tool-btn.active { background: #007acc; border-color: #007acc; }
+        .tool-btn:hover:not(.active) { background: #444; }
 
         /* ── Ingest: image list ───────────────────────────────────────────── */
         #image-list {
@@ -208,9 +219,9 @@
         .gpu-canvas   { z-index: 1; }
         .label-canvas { z-index: 2; cursor: crosshair; }
 
-        /* Spacebar pan cursors */
-        body.space-down .label-canvas  { cursor: grab    !important; }
-        body.space-down.panning .label-canvas { cursor: grabbing !important; }
+        /* Spacebar / Grab Mode pan cursors */
+        body.mode-grab .label-canvas, body.space-down .label-canvas { cursor: grab !important; }
+        body.mode-grab.panning .label-canvas, body.space-down.panning .label-canvas { cursor: grabbing !important; }
 
         /* ── Misc ─────────────────────────────────────────────────────────── */
         #status { font-size: 12px; color: #888; }
@@ -218,7 +229,7 @@
         hr.divider { border: none; border-top: 1px solid #3d3d3d; margin: 0; width: 100%; }
     </style>
 </head>
-<body>
+<body class="mode-grab">
 
 <!-- ── Top bar ────────────────────────────────────────────────────────────── -->
 <div id="top-bar">
@@ -234,6 +245,7 @@
     <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
     <div id="sidebar">
 
+        <!-- ── Section 1: Ingest ────────────────────────────────────────── -->
         <div class="sidebar-section" id="section-ingest">
             <div class="section-header">Images</div>
             
@@ -252,6 +264,7 @@
             </p>
         </div>
 
+        <!-- ── Section 2: Train ─────────────────────────────────────────── -->
         <div class="sidebar-section" id="section-train">
             <div class="section-header">Train</div>
 
@@ -265,13 +278,15 @@
             </div>
 
             <div class="control-group">
-                <span class="control-label">Brush Size &amp; Eraser</span>
-                <div style="display:flex; gap:10px; align-items:center;">
+                <span class="control-label">Tools &amp; Brush Size</span>
+                <div style="display:flex; gap:10px; align-items:end;">
+                    <div style="display:flex; gap:4px; flex:1;">
+                        <button class="tool-btn active" data-tool="grab" title="Grab (Pan)">🖐</button>
+                        <button class="tool-btn" data-tool="paint" title="Paint">🖌</button>
+                        <button class="tool-btn" data-tool="erase" title="Erase">🧽</button>
+                    </div>
                     <input type="number" id="brushSize" value="5"
-                           min="1" max="50" step="1" style="width:60px;">
-                    <button id="btnEraser" class="btn-subtle" style="flex:1;">
-                        Eraser: OFF
-                    </button>
+                           min="1" max="50" step="1" style="width:50px;" title="Brush & Eraser Radius">
                 </div>
             </div>
 
@@ -301,6 +316,7 @@
             </p>
         </div>
 
+        <!-- ── Section 3: Export ────────────────────────────────────────── -->
         <div class="sidebar-section" id="section-export">
             <div class="section-header">Export</div>
 
@@ -380,11 +396,11 @@
         // ML
         rf: new FlatRandomForest(RF_CONFIG),
 
-        // Drawing
+        // Drawing / Tools
         currentClass: 0,
         isDrawing:    false,
         activeImageId: null,
-        isEraser:     false,
+        toolMode:     'grab', // 'grab', 'paint', 'erase'
 
         // Features
         sigma: 1.0,
@@ -463,7 +479,7 @@
         });
 
         viewport.addEventListener('mousedown', () => {
-            if (state.isSpaceDown) {
+            if (state.isSpaceDown || state.toolMode === 'grab') {
                 state.isPanning = true;
                 document.body.classList.add('panning');
             }
@@ -507,14 +523,18 @@
             if (state.liveUpdate) scheduleTrainAndPredictAll();
         };
 
-        // Eraser
-        const btnEraser = document.getElementById('btnEraser');
-        btnEraser.onclick = () => {
-            state.isEraser = !state.isEraser;
-            btnEraser.innerText = state.isEraser ? 'Eraser: ON' : 'Eraser: OFF';
-            btnEraser.style.background = state.isEraser ? '#e51400' : '';
-            btnEraser.classList.toggle('btn-subtle', !state.isEraser);
-        };
+        // Tools Setup (Grab, Paint, Erase)
+        document.querySelectorAll('.tool-btn').forEach(btn => {
+            btn.onclick = () => {
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                state.toolMode = btn.dataset.tool;
+                
+                // Update body class for cursors
+                document.body.classList.remove('mode-grab', 'mode-paint', 'mode-erase');
+                document.body.classList.add(`mode-${state.toolMode}`);
+            };
+        });
 
         // Class selector
         document.querySelectorAll('.class-item').forEach(el => {
@@ -694,14 +714,14 @@
 
         // ── 7. Wire canvas drawing events ───────────────────────────────────
         labelCanvas.addEventListener('mousedown', (e) => {
-            if (state.isSpaceDown) return;
+            if (state.isSpaceDown || state.toolMode === 'grab') return;
             imgState._cachedRect = labelCanvas.getBoundingClientRect();
             state.isDrawing    = true;
             state.activeImageId = imgId;
             paint(e, imgState);
         });
         labelCanvas.addEventListener('mousemove', (e) => {
-            if (state.isDrawing && state.activeImageId === imgId && !state.isSpaceDown) {
+            if (state.isDrawing && state.activeImageId === imgId && !state.isSpaceDown && state.toolMode !== 'grab') {
                 paint(e, imgState);
             }
         });
@@ -1004,12 +1024,12 @@
         const radius = parseInt(document.getElementById('brushSize').value, 10);
         const ctx    = imgState.labelCanvas.getContext('2d');
 
-        if (state.isEraser) {
+        if (state.toolMode === 'erase') {
             ctx.globalCompositeOperation = 'destination-out';
             ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
             imgState.labels = eraseLabelsInRadius(imgState.labels, x, y, radius);
-        } else {
+        } else if (state.toolMode === 'paint') {
             const last = imgState.labels[imgState.labels.length - 1];
             const isDup = last && last.x === x && last.y === y && last.cls === state.currentClass;
 
