@@ -292,15 +292,15 @@
                 <div class="class-selector">
                     <div class="class-item active" data-class="0">
                         <div class="color-box" style="background:red;"></div>
-                        <span>Class 1</span>
+                        <span contenteditable>Class 1</span>
                     </div>
                     <div class="class-item" data-class="1">
                         <div class="color-box" style="background:green;"></div>
-                        <span>Class 2</span>
+                        <span contenteditable>Class 2</span>
                     </div>
                     <div class="class-item" data-class="2">
                         <div class="color-box" style="background:blue;"></div>
-                        <span>Class 3</span>
+                        <span contenteditable>Class 3</span>
                     </div>
                 </div>
             </div>
@@ -365,7 +365,8 @@
         <div id="canvas-board"></div>
     </div>
 
-</div><script type="module">
+</div>
+<script type="module">
     import { FlatRandomForest }    from './rf.js';
     import { WebGpuBackend }       from './backends/webgpu.js';
     import {
@@ -380,18 +381,17 @@
         isDuplicateFile,
     } from './utils.js';
 
-    // ── Constants ────────────────────────────────────────────────────────────
-    const RF_CONFIG             = { numTrees: 8, maxDepth: 8 };
+    const LABEL_COLORS          = [
+        'rgba(255,0,255,1.0)',
+        'rgba(0,255,0,1.0)',
+        'rgba(0,0,255,1.0)',
+    ];
+    const RF_CONFIG             = { numTrees: 8, maxDepth: 8, numClasses: LABEL_COLORS.length };
     const MIN_LABELS_TO_TRAIN   = 5;
     const CAMERA_ZOOM_MIN       = 0.1;
     const CAMERA_ZOOM_MAX       = 10;
     const CAMERA_ZOOM_SENSITIVITY = 0.01;
     const TRAIN_DEBOUNCE_MS     = 300;
-    const LABEL_COLORS          = [
-        'rgba(255,0,0,1.0)',
-        'rgba(0,255,0,1.0)',
-        'rgba(0,0,255,1.0)',
-    ];
 
     // ── State ─────────────────────────────────────────────────────────────────
     const state = {
@@ -691,6 +691,7 @@
 
         // ── 5. Init WebGPU ──────────────────────────────────────────────────
         const backend = new WebGpuBackend();
+        backend.labelColors = LABEL_COLORS;
         try {
             await backend.initialize(gpuCanvas);
         } catch (err) {

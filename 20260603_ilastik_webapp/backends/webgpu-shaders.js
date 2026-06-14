@@ -42,7 +42,7 @@ export const RF_INFERENCE_SHADER = `
         let pixel_idx = y * w + x;
         let feat_offset = pixel_idx * 8u;
         
-        var votes_c1 = 0.0;
+        var votes = array<f32, {{NUM_COLORS}}>();
         var num_trees = 8u; 
 
         for (var t = 0u; t < num_trees; t++) {
@@ -53,7 +53,9 @@ export const RF_INFERENCE_SHADER = `
                 let node = forest[u32(node_idx)];
                 if (node.feat_idx == -1) {
                     let class_id = -node.right - 1;
-                    if (class_id == 0) { votes_c1 += 1.0; }
+                    if (class_id >= 0 && class_id < {{NUM_COLORS}}) {
+                        votes[class_id] += 1.0;
+                    }
                     break;
                 }
                 let val = features[feat_offset + u32(node.feat_idx)];
@@ -65,7 +67,16 @@ export const RF_INFERENCE_SHADER = `
             }
         }
 
-        output[pixel_idx] = votes_c1 / f32(num_trees);
+        var max_votes = -1.0;
+        var best_class = -1.0;
+        for (var c = 0; c < {{NUM_COLORS}}; c++) {
+            if (votes[c] > max_votes) {
+                max_votes = votes[c];
+                best_class = f32(c);
+            }
+        }
+
+        output[pixel_idx] = best_class;
     }
 `;
 
@@ -99,9 +110,19 @@ export const COMPOSITE_SHADER = `
         let p = p_map[clamp(y * w + x, 0u, w * h - 1u)];
         
         var alpha: f32 = 0.4;
-        if (p < 0.0) { alpha = 0.0; }
+        if (p < 0.0) { return vec4(raw.rgb, 1.0); }
         
-        let overlay = mix(vec4(0.0, 1.0, 0.0, alpha), vec4(1.0, 0.0, 0.0, alpha), clamp(p, 0.0, 1.0));
+        var colors = array<vec4<f32>, {{NUM_COLORS}}>(
+            {{COLORS_ARRAY}}
+        );
+
+        let class_idx = i32(p + 0.5);
+        var overlay = vec4<f32>(0.0, 0.0, 0.0, alpha);
+        if (class_idx >= 0 && class_idx < {{NUM_COLORS}}) {
+            overlay = colors[class_idx];
+            overlay.a = alpha;
+        }
+
         return vec4(mix(raw.rgb, overlay.rgb, alpha), 1.0);
     }
 `;

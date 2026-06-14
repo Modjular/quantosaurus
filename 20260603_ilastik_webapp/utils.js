@@ -178,7 +178,8 @@ export async function exportImagesData(images, rf, options) {
         if (exportSeg) {
             const dataUint8Array = new Uint8Array(w * h);
             for (let j = 0; j < probs.length; j++) {
-                dataUint8Array[j] = probs[j] >= 0.5 ? 255 : 0;
+                const c = probs[j];
+                dataUint8Array[j] = c < 0 ? 0 : c + 1;
             }
 
             const itkImage = {
@@ -208,11 +209,13 @@ export async function exportImagesData(images, rf, options) {
         }
 
         if (exportProb) {
-            const dataFloat32Array = new Float32Array(w * h * 2);
+            const numClasses = rf.numClasses || 2;
+            const dataFloat32Array = new Float32Array(w * h * numClasses);
             for (let j = 0; j < probs.length; j++) {
-                const p = Math.max(0, Math.min(1, probs[j]));
-                dataFloat32Array[j * 2] = p;
-                dataFloat32Array[j * 2 + 1] = 1.0 - p;
+                const c = probs[j];
+                if (c >= 0 && c < numClasses) {
+                    dataFloat32Array[j * numClasses + c] = 1.0;
+                }
             }
 
             const itkImage = {
@@ -220,7 +223,7 @@ export async function exportImagesData(images, rf, options) {
                     dimension: 2,
                     pixelType: 'Vector',
                     componentType: 'float32',
-                    components: 2
+                    components: numClasses
                 },
                 name: `${baseName}_probabilities`,
                 origin: [0.0, 0.0],

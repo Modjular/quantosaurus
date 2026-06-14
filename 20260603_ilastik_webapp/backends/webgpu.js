@@ -314,9 +314,11 @@ export class WebGpuBackend {
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
         });
 
+        const numColors = this.labelColors ? this.labelColors.length : 3;
         const code = shaders.RF_INFERENCE_SHADER
             .replace(/{{WIDTH}}/g, this.width)
-            .replace(/{{HEIGHT}}/g, this.height);
+            .replace(/{{HEIGHT}}/g, this.height)
+            .replace(/{{NUM_COLORS}}/g, numColors);
 
         const module = this.device.createShaderModule({ code });
         const pipeline = this.device.createComputePipeline({
@@ -348,9 +350,27 @@ export class WebGpuBackend {
     renderComposite() {
         if (!this.originalTexture || !this.probBuffer) return;
 
+        const colors = this.labelColors || [
+            'rgba(255,0,255,1.0)',
+            'rgba(0,255,0,1.0)',
+            'rgba(0,0,255,1.0)',
+        ];
+
+        function parseColor(c) {
+            let m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),?\s*([\d.]+)?\)/);
+            if (m) {
+                return `vec4<f32>(${(m[1]/255).toFixed(3)}, ${(m[2]/255).toFixed(3)}, ${(m[3]/255).toFixed(3)}, ${m[4] || '1.0'})`;
+            }
+            return "vec4<f32>(1.0, 0.0, 0.0, 1.0)";
+        }
+        
+        const colorsWGSL = colors.map(parseColor).join(',\n            ');
+
         const code = shaders.COMPOSITE_SHADER
             .replace(/{{WIDTH}}/g, this.width)
-            .replace(/{{HEIGHT}}/g, this.height);
+            .replace(/{{HEIGHT}}/g, this.height)
+            .replace(/{{NUM_COLORS}}/g, colors.length)
+            .replace(/{{COLORS_ARRAY}}/g, colorsWGSL);
 
         const module = this.device.createShaderModule({ code });
         const pipeline = this.device.createRenderPipeline({
