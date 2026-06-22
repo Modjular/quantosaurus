@@ -146,14 +146,14 @@ export async function buildTrainingDataset(images, totalLabels) {
  * @param {FileSystemDirectoryHandle} outputDirHandle - Optional handle to the output directory. If omitted, exports to a ZIP.
  * @param {boolean} exportSeg - Whether to export segmentation masks.
  * @param {boolean} exportProb - Whether to export probability maps.
+ * @param {Function} progressCallback - Optional callback for UI progress updates.
  * @returns {Promise<void>}
  */
-export async function exportImagesData(images, outputDirHandle, exportProb, exportSeg) {
-    let zip = null;
-    if (!outputDirHandle) {
-        const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
-        zip = new JSZip();
-    } else {
+export async function exportImagesData(images, outputDirHandle, exportProb, exportSeg, progressCallback) {
+    // Array to temporarily hold file data if we are zipping
+    const filesToZip = []; 
+
+    if (outputDirHandle) {
         const permission = await verifyPermission(outputDirHandle, true);
         if (!permission) {
             throw new Error("Permission to write to output directory was denied.");
@@ -167,7 +167,7 @@ export async function exportImagesData(images, outputDirHandle, exportProb, expo
         const h = img.height;
         const baseName = img.name ? img.name.replace(/\.[^/.]+$/, "") : `image_${i}`;
         const numClasses = (probs.length / (w * h));
-        
+
         if (exportSeg) {
             const dataUint8Array = new Uint8Array(w * h);
             for (let j = 0; j < w * h; j++) {
@@ -201,12 +201,13 @@ export async function exportImagesData(images, outputDirHandle, exportProb, expo
 
             const filename = `${baseName}_segmentation.tif`;
             const { serializedImage } = await writeImage(itkImage, `${itkImage.name}.tif`);
-            const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
-
+            
             if (outputDirHandle) {
+                const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
                 await writeFile(outputDirHandle, filename, blob);
             } else {
-                zip.file(filename, blob);
+                // Store the raw ArrayBuffer for the worker
+                filesToZip.push({ name: filename, data: serializedImage.data.buffer });
             }
         }
 
@@ -231,23 +232,78 @@ export async function exportImagesData(images, outputDirHandle, exportProb, expo
 
             const filename = `${baseName}_probabilities.tif`;
             const { serializedImage } = await writeImage(itkImage, `${itkImage.name}.tif`);
-            const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
-
+            
             if (outputDirHandle) {
+                const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
                 await writeFile(outputDirHandle, filename, blob);
             } else {
-                zip.file(filename, blob);
+                // Store the raw ArrayBuffer for the worker
+                filesToZip.push({ name: filename, data: serializedImage.data.buffer });
             }
         }
     }
 
-    if (zip) {
-        const content = await zip.generateAsync({ type: "blob" });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(content);
-        link.download = "ilastik_export.zip";
-        link.click();
-        URL.revokeObjectURL(link.href);
+    if (!outputDirHandle && filesToZip.length > 0) {
+        /**
+         * To prevent the main thread from locking during the zip we do it in a webworker.
+         * This allows a progress callback to update regularly.
+         */
+        return new Promise((resolve, reject) => {
+            const workerCode = `
+                importScripts('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+                
+                self.onmessage = async function(e) {
+                    const files = e.data;
+                    const zip = new JSZip();
+                    
+                    for (const file of files) {
+                        zip.file(file.name, file.data);
+                    }
+                    
+                    try {
+                        const content = await zip.generateAsync({ type: "blob" }, (metadata) => {
+                            self.postMessage({ type: 'progress', metadata });
+                        });
+                        self.postMessage({ type: 'done', content });
+                    } catch (error) {
+                        self.postMessage({ type: 'error', error: error.message });
+                    }
+                };
+            `;
+
+            const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+            const workerUrl = URL.createObjectURL(workerBlob);
+            const worker = new Worker(workerUrl);
+
+            worker.onmessage = (e) => {
+                const { type, metadata, content, error } = e.data;
+
+                if (type === 'progress') {
+                    progressCallback(metadata.percent, metadata.currentFile);
+                } 
+                else if (type === 'done') {
+                    const link = document.createElement('a');
+                    const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,"");
+                    link.href = URL.createObjectURL(content);
+                    link.download = `ilastik_export_${yyyymmdd}.zip`;
+                    link.click();
+                    URL.revokeObjectURL(link.href);
+                    
+                    worker.terminate();
+                    URL.revokeObjectURL(workerUrl); // Cleanup
+                    resolve();
+                } 
+                else if (type === 'error') {
+                    worker.terminate();
+                    URL.revokeObjectURL(workerUrl);
+                    reject(new Error(`Zip creation failed: ${error}`));
+                }
+            };
+
+            // Extract ArrayBuffers to transfer ownership (Zero-copy for better performance)
+            const transferables = filesToZip.map(f => f.data);
+            worker.postMessage(filesToZip, transferables);
+        });
     }
 }
 
