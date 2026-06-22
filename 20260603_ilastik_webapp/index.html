@@ -371,14 +371,11 @@
     import { WebGpuBackend }       from './backends/webgpu.js';
     import {
         loadFileIntoArray,
-        verifyPermission,
-        writeFile,
         buildTrainingDataset,
         getPixelsInRadius,
         exportImagesData,
         inferAxes,
         pickSlice,
-        isDuplicateFile,
     } from './utils.js';
 
     const LABEL_COLORS          = [
@@ -597,7 +594,6 @@
                 return;
             }
 
-            const origText = btnExport.innerText;
             btnExport.disabled = true;
             btnExport.innerText = 'Training…';
             try {
@@ -606,7 +602,6 @@
                 await exportImagesData(state.images, state.rf, {
                     exportSeg, exportProb,
                     outputDirHandle: state.outputDirHandle,
-                    verifyPermission, writeFile,
                 });
                 alert('All images exported successfully!');
             } catch (err) {
@@ -614,7 +609,6 @@
                 alert(`Export failed: ${err.message}`);
             } finally {
                 btnExport.disabled = false;
-                btnExport.innerText = origText;
                 updateExportButtonCount();
             }
         };

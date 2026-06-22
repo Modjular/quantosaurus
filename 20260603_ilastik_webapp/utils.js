@@ -5,12 +5,11 @@ export async function loadFileIntoArray(file) {
   let data, rgba, w, h;
 
   if (file.name.endsWith('.tif') || file.name.endsWith('.tiff')) {
-    const buffer = await file.arrayBuffer();
     const { image } = await readImage(file)
 
     w = image.size[0]
     h = image.size[1]
-    rgba = new Int8Array(image.data.length * 4)
+    rgba = new Uint8Array(image.data.length * 4)
     data = image.data
   } else {
     const img = await createImageBitmap(file);
@@ -20,6 +19,7 @@ export async function loadFileIntoArray(file) {
     const ctx = off.getContext('2d');
     ctx.drawImage(img, 0, 0);
     rgba = ctx.getImageData(0, 0, w, h).data;
+    data = new Float32Array(w * h)
 
     // Convert RGBA to intensity
     for (let i = 0; i < w * h; i++) {
@@ -68,9 +68,13 @@ export async function verifyPermission(fileHandle, readWrite) {
   return false;
 }
 
-export async function writeFile(folderHandle, filename, image) {
-  const { serializedImage } = await writeImage(image, `${image.name}.tif`);
-  const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
+/**
+ * Handles writing a file to disk using the File System API
+ * @param {FileSystemDirectoryHandle} folderHandle 
+ * @param {String} filename 
+ * @param {Blob} blob 
+ */
+export async function writeFile(folderHandle, filename, blob) {
   const fileHandle = await folderHandle.getFileHandle(filename, { create: true });
   const writable = await fileHandle.createWritable();
   await writable.write(blob);
@@ -151,8 +155,8 @@ export function getPixelsInRadius(cx, cy, radius, width, height) {
  * Handles generating ITK images, requesting file permissions, and batching files into ZIPs or directories.
  */
 export async function exportImagesData(images, rf, options) {
-    const { exportSeg, exportProb, outputDirHandle, verifyPermission, writeFile } = options;
-    
+    const { exportSeg, exportProb, outputDirHandle } = options;
+
     let zip = null;
     if (!outputDirHandle) {
         const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
@@ -199,12 +203,13 @@ export async function exportImagesData(images, rf, options) {
             };
 
             const filename = `${baseName}_segmentation.tif`;
-            let blob; // Assuming createTiffBlob will be implemented or imported here eventually
-            
+            const { serializedImage } = await writeImage(itkImage, `${itkImage.name}.tif`);
+            const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
+
             if (outputDirHandle) {
-                await writeFile(outputDirHandle, filename, itkImage);
+                await writeFile(outputDirHandle, filename, blob);
             } else {
-                zip.file(filename, blob || itkImage.data);
+                zip.file(filename, blob);
             }
         }
 
@@ -235,12 +240,13 @@ export async function exportImagesData(images, rf, options) {
             };
 
             const filename = `${baseName}_probabilities.tif`;
-            let blob; // Assuming createTiffBlob will be implemented or imported here eventually
-            
+            const { serializedImage } = await writeImage(itkImage, `${itkImage.name}.tif`);
+            const blob = new Blob([serializedImage.data], { type: 'image/tiff' });
+
             if (outputDirHandle) {
-                await writeFile(outputDirHandle, filename, itkImage);
+                await writeFile(outputDirHandle, filename, blob);
             } else {
-                zip.file(filename, blob || itkImage.data);
+                zip.file(filename, blob);
             }
         }
     }
