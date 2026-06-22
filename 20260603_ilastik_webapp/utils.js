@@ -1,6 +1,11 @@
 import { readImage, writeImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
 
 
+/**
+ * Loads an image file into a typed array, handling both TIFFs and standard web formats.
+ * @param {File} file - The image file to load.
+ * @returns {Promise<{intensityArray: Float32Array, rgba: Uint8Array|Uint8ClampedArray, w: number, h: number}>} An object containing the normalized intensity array, the raw RGBA array, and the dimensions.
+ */
 export async function loadFileIntoArray(file) {
   let data, rgba, w, h;
 
@@ -54,6 +59,12 @@ export async function loadFileIntoArray(file) {
   return { intensityArray, rgba, w, h }
 }
 
+/**
+ * Verifies or requests permission to access a file or directory handle.
+ * @param {FileSystemHandle} fileHandle - The file or directory handle to verify.
+ * @param {boolean} readWrite - Whether to request read-write permission (true) or just read permission (false).
+ * @returns {Promise<boolean>} True if permission was granted, false otherwise.
+ */
 export async function verifyPermission(fileHandle, readWrite) {
   const options = {};
   if (readWrite) {
@@ -83,6 +94,9 @@ export async function writeFile(folderHandle, filename, blob) {
 
 /**
  * Aggregates features and labels across all images into 1D typed arrays for Random Forest training.
+ * @param {Array<Object>} images - Array of image objects containing labels and a backend to gather features.
+ * @param {number} totalLabels - The total number of labels across all images.
+ * @returns {Promise<{combinedX: Float32Array, yArray: Int32Array}>} An object containing the concatenated features (combinedX) and their corresponding labels (yArray).
  */
 export async function buildTrainingDataset(images, totalLabels) {
     const allX = [];
@@ -118,6 +132,15 @@ export async function buildTrainingDataset(images, totalLabels) {
 }
 
 
+/**
+ * Returns an array of pixel coordinates that fall within a given radius of a center point.
+ * @param {number} cx - The x-coordinate of the center.
+ * @param {number} cy - The y-coordinate of the center.
+ * @param {number} radius - The radius of the circle.
+ * @param {number} width - The width of the bounding canvas/image.
+ * @param {number} height - The height of the bounding canvas/image.
+ * @returns {Array<{x: number, y: number}>} Array of point objects containing the coordinates within the radius.
+ */
 export function getPixelsInRadius(cx, cy, radius, width, height) {
     const pixels = [];
     
@@ -153,6 +176,13 @@ export function getPixelsInRadius(cx, cy, radius, width, height) {
 
 /**
  * Handles generating ITK images, requesting file permissions, and batching files into ZIPs or directories.
+ * @param {Array<Object>} images - Array of image objects to export.
+ * @param {Object} rf - The random forest model used for inference.
+ * @param {Object} options - Export configuration options.
+ * @param {boolean} [options.exportSeg] - Whether to export segmentation masks.
+ * @param {boolean} [options.exportProb] - Whether to export probability maps.
+ * @param {FileSystemDirectoryHandle} [options.outputDirHandle] - Optional handle to the output directory. If omitted, exports to a ZIP.
+ * @returns {Promise<void>}
  */
 export async function exportImagesData(images, rf, options) {
     const { exportSeg, exportProb, outputDirHandle } = options;
@@ -261,23 +291,21 @@ export async function exportImagesData(images, rf, options) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// inferAxes(shape)
-//
-// Given a multi-dimensional image shape array (e.g. [10, 512, 768] for a
-// Z-stack), return the two axis indices that should be used as the display
-// XY plane.
-//
-// Strategy: prefer the last two dimensions (NumPy / TIFF channel-first
-// convention: [Z, Y, X] or [C, Y, X]), which is almost always correct.
-// The "two largest" heuristic would mis-select a large Z-stack as X/Y, so
-// we intentionally avoid it.
-//
-// For 2-D images (shape.length === 2) this returns [0, 1] and callers should
-// hide the axis selector entirely — no-op selection.
-//
-// Returns: { axisY: number, axisX: number }
-// ---------------------------------------------------------------------------
+/**
+ * Given a multi-dimensional image shape array (e.g. [10, 512, 768] for a
+ * Z-stack), return the two axis indices that should be used as the display XY plane.
+ * 
+ * Strategy: prefer the last two dimensions (NumPy / TIFF channel-first
+ * convention: [Z, Y, X] or [C, Y, X]), which is almost always correct.
+ * The "two largest" heuristic would mis-select a large Z-stack as X/Y, so
+ * we intentionally avoid it.
+ * 
+ * For 2-D images (shape.length === 2) this returns [0, 1] and callers should
+ * hide the axis selector entirely — no-op selection.
+ * 
+ * @param {Array<number>} shape - The dimensions of the image.
+ * @returns {{ axisY: number, axisX: number }} Object containing the indices for the Y and X display axes.
+ */
 export function inferAxes(shape) {
     if (!Array.isArray(shape) || shape.length < 2) {
         throw new Error(`inferAxes: shape must have at least 2 dimensions, got ${JSON.stringify(shape)}`);
@@ -286,25 +314,22 @@ export function inferAxes(shape) {
     return { axisY: n - 2, axisX: n - 1 };
 }
 
-// ---------------------------------------------------------------------------
-// pickSlice(ndarray, shape, axes, sliceIndices)
-//
-// Extract a 2-D slice from a flat typed array representing an n-D image.
-//
-// Parameters:
-//   ndarray      – flat Float32Array (or similar) of the full image data
-//   shape        – Array<number>  e.g. [10, 512, 768]
-//   axes         – { axisY, axisX }  which dims to treat as Y and X
-//   sliceIndices – Array<number>  index to use for each non-display axis
-//                  (length must equal shape.length - 2, in dimension order
-//                  excluding axisY and axisX)
-//
-// Returns a Float32Array of length shape[axisY] * shape[axisX].
-//
-// This is intentionally simple: it iterates in JS rather than using GPU
-// tricks. For large stacks the caller should call this once at slice-select
-// time and cache the result, not on every frame.
-// ---------------------------------------------------------------------------
+/**
+ * Extract a 2-D slice from a flat typed array representing an n-D image.
+ * 
+ * This is intentionally simple: it iterates in JS rather than using GPU tricks.
+ * For large stacks the caller should call this once at slice-select time and
+ * cache the result, not on every frame.
+ * 
+ * @param {Float32Array|TypedArray} ndarray - Flat typed array of the full image data.
+ * @param {Array<number>} shape - Image dimensions (e.g., [10, 512, 768]).
+ * @param {Object} axes - Which dimensions to treat as Y and X.
+ * @param {number} axes.axisY - Index of the Y axis in the shape array.
+ * @param {number} axes.axisX - Index of the X axis in the shape array.
+ * @param {Array<number>} sliceIndices - Index to use for each non-display axis
+ *        (length must equal shape.length - 2, in dimension order excluding axisY and axisX).
+ * @returns {Float32Array} The extracted 2-D slice of length shape[axisY] * shape[axisX].
+ */
 export function pickSlice(ndarray, shape, { axisY, axisX }, sliceIndices) {
     const height = shape[axisY];
     const width  = shape[axisX];
@@ -341,16 +366,4 @@ export function pickSlice(ndarray, shape, { axisY, axisX }, sliceIndices) {
     }
 
     return result;
-}
-
-// ---------------------------------------------------------------------------
-// isDuplicateFile(file, existingImages)
-//
-// Returns true if a file with the same name and byte-size is already in the
-// loaded image list. Used to silently deduplicate drag-and-drop re-drops.
-// ---------------------------------------------------------------------------
-export function isDuplicateFile(file, existingImages) {
-    return existingImages.some(
-        img => img.name === file.name && img.fileSize === file.size
-    );
 }
