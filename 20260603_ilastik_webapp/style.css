@@ -23,8 +23,8 @@
     --text-light: #ffffff;
 
     /* Semantic Accents */
-    --accent-primary: #007acc;
-    --accent-primary-hover: #0062cc;
+    --accent-primary: #287b60;
+    --accent-primary-hover: #236f55;
     --accent-success: #28a745;
     --accent-success-hover: #218838;
     --accent-danger: #c0392b;
@@ -123,11 +123,16 @@ input[type="range"] {
     accent-color: var(--accent-primary);
 }
 
+input[type="checkbox"] {
+    accent-color: var(--accent-primary);
+}
+
+/* Root interactive elements now cleanly bound to the primary accent color */
 input[type="number"],
 input[type="file"],
 .img-axes-row select {
     background: var(--bg-control);
-    border: 1px solid var(--border-control);
+    border: 1px solid var(--accent-primary);
     color: var(--text-main);
     border-radius: var(--radius-sm);
     padding: 4px 6px;
@@ -433,7 +438,7 @@ button:disabled {
 
 /* ── Composite Structural Panels ──────────────────────────────────── */
 .heavy-panel {
-    background: var(--bg-base);
+    background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     padding: 14px;
