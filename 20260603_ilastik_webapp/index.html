@@ -138,7 +138,7 @@
     import { setupCamera } from './camera.js';
     import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './imageManager.js';
     import { syncUI } from './ui.js';
-    import { exportImagesData } from './utils.js';
+    import { zipImages } from './utils.js';
 
     function init() {
         const viewport = document.getElementById('viewport');
@@ -223,14 +223,26 @@
             btnExport.disabled = true;
             btnExport.innerText = 'Training…';
             try {
-                // Train then run inference to ensure textures/buffers are updated
+                // Train then run inference to ensure textures/buffers are updated before zipping
                 await trainAndPredictAll();
+
                 btnExport.innerText = 'Exporting…';
-                const foo = await exportImagesData(
+                const zipBlob = await zipImages(
                     state.images,
                     exportSeg,
                     exportProb,
+                    (metadata) => btnExport.innerText = metadata.percent.toFixed(2) + "%",
                 );
+
+                if (!zipBlob) throw Error('zip is empty, nothing to export')
+
+                const link = document.createElement('a');
+                const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,"");
+                link.href = URL.createObjectURL(zipBlob);
+                link.download = `ilastik_export_${yyyymmdd}.zip`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+
                 alert('All images exported successfully!');
             } catch (err) {
                 console.error(err);

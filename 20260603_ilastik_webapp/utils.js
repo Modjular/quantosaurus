@@ -114,9 +114,9 @@ export async function buildTrainingDataset(images, totalLabels) {
  * @param {boolean} exportSeg - Whether to export segmentation masks.
  * @param {boolean} exportProb - Whether to export probability maps.
  * @param {Function} progressCallback - Optional callback for UI progress updates.
- * @returns {Promise<void>}
+ * @returns {Promise<Blob>} A promise that resolves to the generated ZIP Blob.
  */
-export async function exportImagesData(images, outputDirHandle, exportProb, exportSeg, progressCallback) {
+export async function zipImages(images, exportSeg, exportProb, progressCallback) {
     // Array to temporarily hold file data if we are zipping
     const filesToZip = [];
     const callback = progressCallback || ((m) => console.log(m))
@@ -212,10 +212,10 @@ export async function exportImagesData(images, outputDirHandle, exportProb, expo
                     }
                     
                     try {
-                        const content = await zip.generateAsync({ type: "blob" }, (metadata) => {
+                        const content = await zip.generateAsync({ type: "uint8array" }, (metadata) => {
                             self.postMessage({ type: 'progress', metadata });
                         });
-                        self.postMessage({ type: 'done', content });
+                        self.postMessage({ type: 'done', content: content.buffer }, [content.buffer]);
                     } catch (error) {
                         self.postMessage({ type: 'error', error: error.message });
                     }
@@ -230,19 +230,13 @@ export async function exportImagesData(images, outputDirHandle, exportProb, expo
                 const { type, metadata, content, error } = e.data;
 
                 if (type === 'progress') {
-                    callback(metadata.percent, metadata.currentFile);
+                    callback(metadata);
                 } 
                 else if (type === 'done') {
-                    const link = document.createElement('a');
-                    const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,"");
-                    link.href = URL.createObjectURL(content);
-                    link.download = `ilastik_export_${yyyymmdd}.zip`;
-                    link.click();
-                    URL.revokeObjectURL(link.href);
-                    
                     worker.terminate();
                     URL.revokeObjectURL(workerUrl); // Cleanup
-                    resolve('foo');
+                    const blob = new Blob([content], { type: 'application/zip' });
+                    resolve(blob);
                 } 
                 else if (type === 'error') {
                     worker.terminate();
