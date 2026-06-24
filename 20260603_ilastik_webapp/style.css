@@ -391,54 +391,9 @@ button:disabled {
     flex-shrink: 0;
 }
 
-/* ── Smooth Animated Toggle ────────────────────────────────────────── */
-.toggle-switch {
-    position: relative;
-    display: inline-block;
-    width: 44px;
-    height: 24px;
-}
-.toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-}
-.toggle-switch .slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: var(--accent-subtle-hover);
-    transition: background-color 0.2s ease;
-    border-radius: 24px;
-}
-.toggle-switch .slider:before {
-    position: absolute;
-    content: "";
-    height: 18px;
-    width: 18px;
-    left: 3px;
-    bottom: 3px;
-    background-color: var(--text-light);
-    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    border-radius: 50%;
-}
-.toggle-switch input:checked + .slider {
-    background-color: var(--accent-success);
-}
-.toggle-switch input:checked + .slider:before {
-    transform: translateX(20px);
-}
-.toggle-switch input:disabled + .slider {
-    opacity: 0.3;
-    cursor: not-allowed;
-}
-
 /* ── Composite Structural Panels ──────────────────────────────────── */
 .heavy-panel {
-    background: var(--bg-surface);
+    background: var(--bg-base);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     padding: 14px;

@@ -70,34 +70,26 @@
 
             <div class="heavy-panel">
                 <div class="heavy-panel-header">
-                    <span class="heavy-panel-title">Real-Time Prediction</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="btnTrain" disabled>
-                        <span class="slider"></span>
-                    </label>
+                  <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                      <input type="checkbox" id="btnTrain" disabled>
+                      Real-Time Prediction
+                  </label>
                 </div>
                 <p class="heavy-panel-desc">
-                    Real-time prediction is compute intense. Performance may degrade with larger image stacks.
+                    Real-time predictions enable instant feedback but is compute intense. Performance may degrade with larger image stacks.
                 </p>
             </div>
-
-            <p class="hint">
-                Paint labels on the canvas, then enable Live Update to see
-                segmentation results in real time.
-            </p>
         </div>
 
         <div class="sidebar-section" id="section-export">
             <div class="section-header">Export</div>
 
             <div class="control-group">
-                <label style="display:flex; align-items:center; gap:8px;
-                               font-size:13px; cursor:pointer;">
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
                     <input type="checkbox" id="chkExportSeg" checked>
                     Segmentations
                 </label>
-                <label style="display:flex; align-items:center; gap:8px;
-                               font-size:13px; cursor:pointer;">
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
                     <input type="checkbox" id="chkExportProb">
                     Probabilities
                 </label>
