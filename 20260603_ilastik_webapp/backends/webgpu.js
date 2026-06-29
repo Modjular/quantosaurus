@@ -8,6 +8,11 @@ export class WebGpuBackend {
         this.originalTexture = null;
         this.featureBuffer = null;
         this.probBuffer = null;
+        
+        // New buffers for Topology and Analysis
+        this.labelBuffer = null;
+        this.statsBuffer = null;
+
         this.labelColors = labelColors || [
             'rgba(255,0,0,1.0)',
             'rgba(0,255,0,1.0)',
@@ -50,12 +55,162 @@ export class WebGpuBackend {
 
         const initialProbs = new Float32Array(width * height * numColors).fill(-1.0);
         this.device.queue.writeBuffer(this.probBuffer, 0, initialProbs);
+
+        // Allocate/Reset Component Label Buffers (u32 per pixel)
+        if (this.labelBuffer) this.labelBuffer.destroy();
+        this.labelBuffer = this.device.createBuffer({
+            size: width * height * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+        });
     }
 
     async updateFeatures(intensityArray, sigma) {
         if (this.featureBuffer) this.featureBuffer.destroy();
         this.featureBuffer = await this._extractFeatures(intensityArray, sigma);
         this.renderComposite();
+    }
+
+    /**
+     * Multi-pass Connected Component Labeling Pipeline
+     * Processes the live probability buffer entirely on-GPU.
+     */
+    async computeConnectedComponents(targetClassIdx, threshold = 0.5) {
+        const numPixels = this.width * this.height;
+
+        const baseCode = CCL_SHADER
+            .replace(/{{WIDTH}}/g, this.width)
+            .replace(/{{HEIGHT}}/g, this.height)
+            .replace(/{{NUM_COLORS}}/g, this.labelColors.length)
+            .replace(/{{TARGET_CLASS}}/g, targetClassIdx)
+            .replace(/{{THRESHOLD}}/g, threshold.toFixed(4));
+
+        const module = this.device.createShaderModule({ code: baseCode });
+        
+        const pipeInit = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'init_labels' } });
+        const pipeMerge = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'merge_neighbors' } });
+        const pipeFlatten = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'flatten_paths' } });
+
+        const bindGroup = this.device.createBindGroup({
+            layout: pipeInit.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.probBuffer } },
+                { binding: 1, resource: { buffer: this.labelBuffer } }
+            ]
+        });
+
+        const enc = this.device.createCommandEncoder();
+        const dispatchX = Math.ceil(this.width / 16);
+        const dispatchY = Math.ceil(this.height / 16);
+
+        // Pass 1: Initialize values based on raw inference thresholds
+        const p1 = enc.beginComputePass();
+        p1.setPipeline(pipeInit);
+        p1.setBindGroup(0, bindGroup);
+        p1.dispatchWorkgroups(dispatchX, dispatchY);
+        p1.end();
+
+        // Pass 2: Neighborhood boundary checking and equivalence linking
+        const p2 = enc.beginComputePass();
+        p2.setPipeline(pipeMerge);
+        p2.setBindGroup(0, bindGroup);
+        p2.dispatchWorkgroups(dispatchX, dispatchY);
+        p2.end();
+
+        // Pass 3: Path relaxation (Tree flattening) to find absolute roots
+        const p3 = enc.beginComputePass();
+        p3.setPipeline(pipeFlatten);
+        p3.setBindGroup(0, bindGroup);
+        p3.dispatchWorkgroups(dispatchX, dispatchY);
+        p3.end();
+
+        this.device.queue.submit([enc.finish()]);
+        return this.labelBuffer;
+    }
+
+    /**
+     * Compiles area and cumulative intensity metric profiles per label ID.
+     */
+    async computeStats(rawIntensityBuffer, maxExpectedLabels = 50000) {
+        // 2 elements per label structure: [u32 area, u32 total_intensity]
+        const statsSize = maxExpectedLabels * 2 * 4; 
+
+        if (this.statsBuffer) this.statsBuffer.destroy();
+        this.statsBuffer = this.device.createBuffer({
+            size: statsSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        });
+
+        // Zero out memory architecture
+        const clearEncoder = this.device.createCommandEncoder();
+        clearEncoder.clearBuffer(this.statsBuffer, 0, statsSize);
+        this.device.queue.submit([clearEncoder.finish()]);
+
+        let gpuRawInput;
+        if (rawIntensityBuffer instanceof GPUBuffer) {
+            gpuRawInput = rawIntensityBuffer;
+        } else {
+            gpuRawInput = this.device.createBuffer({
+                size: rawIntensityBuffer.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+            });
+            this.device.queue.writeBuffer(gpuRawInput, 0, rawIntensityBuffer);
+        }
+
+        const code = STATS_ACCUMULATOR_SHADER
+            .replace(/{{WIDTH}}/g, this.width)
+            .replace(/{{HEIGHT}}/g, this.height)
+            .replace(/{{MAX_LABELS}}/g, maxExpectedLabels);
+
+        const module = this.device.createShaderModule({ code });
+        const pipeline = this.device.createComputePipeline({
+            layout: 'auto',
+            compute: { module, entryPoint: 'main' }
+        });
+
+        const bindGroup = this.device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.labelBuffer } },
+                { binding: 1, resource: { buffer: gpuRawInput } },
+                { binding: 2, resource: { buffer: this.statsBuffer } }
+            ]
+        });
+
+        const enc = this.device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(Math.ceil(this.width / 16), Math.ceil(this.height / 16));
+        pass.end();
+        this.device.queue.submit([enc.finish()]);
+
+        if (!(rawIntensityBuffer instanceof GPUBuffer)) {
+            gpuRawInput.destroy();
+        }
+
+        return this.statsBuffer;
+    }
+
+    /**
+     * Downloads computed features back to system RAM.
+     */
+    async downloadLabels() {
+        const outSize = this.width * this.height;
+        const rb = this.device.createBuffer({
+            size: outSize * 4,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+
+        const enc = this.device.createCommandEncoder();
+        enc.copyBufferToBuffer(this.labelBuffer, 0, rb, 0, outSize * 4);
+        this.device.queue.submit([enc.finish()]);
+
+        await rb.mapAsync(GPUMapMode.READ);
+        const res = new Uint32Array(rb.getMappedRange().slice());
+        rb.unmap();
+        rb.destroy();
+        
+        return res;
     }
 
     /**
@@ -220,10 +375,6 @@ export class WebGpuBackend {
         return gpuOutput;
     }
 
-    /**
-     * Optional utility to pull the feature data back to system RAM.
-     * Useful for CPU-side unit testing.
-     */
     async downloadFeatures(intensityArray, scale) {
         const gpuOutput = await this._extractFeatures(intensityArray, scale);
         const outSize = 8 * this.width * this.height;
@@ -355,7 +506,7 @@ export class WebGpuBackend {
     renderComposite() {
         if (!this.originalTexture || !this.probBuffer) return;
 
-        const colors = this.labelColors
+        const colors = this.labelColors;
 
         function parseColor(c) {
             // rgba
@@ -509,137 +660,264 @@ function gaussian_kernel(scale, order = 0) {
 }
 
 /**
- * === SHADERS ===
- */
+* === GLOBAL COMPUTE AND RENDER WGSL SOURCE GLUE ===
+*/
 
- const GATHER_FEATURES_SHADER = `
- @group(0) @binding(0) var<storage, read> src_features: array<f32>;
- @group(0) @binding(1) var<storage, read> indices: array<u32>;
- @group(0) @binding(2) var<storage, read_write> dst_features: array<f32>;
+const GATHER_FEATURES_SHADER = `
+@group(0) @binding(0) var<storage, read> src_features: array<f32>;
+@group(0) @binding(1) var<storage, read> indices: array<u32>;
+@group(0) @binding(2) var<storage, read_write> dst_features: array<f32>;
 
- @compute @workgroup_size(64)
- fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-     let label_idx = id.x;
-     let num_labels = arrayLength(&indices);
-     if (label_idx >= num_labels) { return; }
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let label_idx = id.x;
+    let num_labels = arrayLength(&indices);
+    if (label_idx >= num_labels) { return; }
 
-     let pixel_idx = indices[label_idx];
-     let src_offset = pixel_idx * 8u;
-     let dst_offset = label_idx * 8u;
+    let pixel_idx = indices[label_idx];
+    let src_offset = pixel_idx * 8u;
+    let dst_offset = label_idx * 8u;
 
-     for (var i = 0u; i < 8u; i++) {
-         dst_features[dst_offset + i] = src_features[src_offset + i];
-     }
- }
+    for (var i = 0u; i < 8u; i++) {
+        dst_features[dst_offset + i] = src_features[src_offset + i];
+    }
+}
 `;
 
 const RF_INFERENCE_SHADER = `
- struct Node {
-     feat_idx: i32,
-     threshold: f32,
-     left: i32,
-     right: i32,
- };
+struct Node {
+    feat_idx: i32,
+    threshold: f32,
+    left: i32,
+    right: i32,
+};
 
- @group(0) @binding(0) var<storage, read> features: array<f32>;
- @group(0) @binding(1) var<storage, read> forest: array<Node>;
- @group(0) @binding(2) var<uniform> tree_roots: array<vec4<i32>, 2>; 
- @group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(0) var<storage, read> features: array<f32>;
+@group(0) @binding(1) var<storage, read> forest: array<Node>;
+@group(0) @binding(2) var<uniform> tree_roots: array<vec4<i32>, 2>; 
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
 
- @compute @workgroup_size(16, 16)
- fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-     let x = id.x; let y = id.y;
-     let w = u32({{WIDTH}});
-     let h = u32({{HEIGHT}});
-     if (x >= w || y >= h) { return; }
-     
-     let pixel_idx = y * w + x;
-     let feat_offset = pixel_idx * 8u;
-     
-     var votes = array<f32, {{NUM_COLORS}}>();
-     var num_trees = 8u; 
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let x = id.x; let y = id.y;
+    let w = u32({{WIDTH}});
+    let h = u32({{HEIGHT}});
+    if (x >= w || y >= h) { return; }
+    
+    let pixel_idx = y * w + x;
+    let feat_offset = pixel_idx * 8u;
+    
+    var votes = array<f32, {{NUM_COLORS}}>();
+    var num_trees = 8u; 
 
-     for (var t = 0u; t < num_trees; t++) {
-         var node_idx = tree_roots[t/4u][t%4u];
-         if (node_idx < 0) { continue; }
+    for (var t = 0u; t < num_trees; t++) {
+        var node_idx = tree_roots[t/4u][t%4u];
+        if (node_idx < 0) { continue; }
 
-         for (var depth = 0; depth < 10; depth++) {
-             let node = forest[u32(node_idx)];
-             if (node.feat_idx == -1) {
-                 let class_id = -node.right - 1;
-                 if (class_id >= 0 && class_id < {{NUM_COLORS}}) {
-                     votes[class_id] += 1.0;
-                 }
-                 break;
-             }
-             let val = features[feat_offset + u32(node.feat_idx)];
-             if (val < node.threshold) {
-                 node_idx = node.left;
-             } else {
-                 node_idx = node.right;
-             }
-         }
-     }
+        for (var depth = 0; depth < 10; depth++) {
+            let node = forest[u32(node_idx)];
+            if (node.feat_idx == -1) {
+                let class_id = -node.right - 1;
+                if (class_id >= 0 && class_id < {{NUM_COLORS}}) {
+                    votes[class_id] += 1.0;
+                }
+                break;
+            }
+            let val = features[feat_offset + u32(node.feat_idx)];
+            if (val < node.threshold) {
+                node_idx = node.left;
+            } else {
+                node_idx = node.right;
+            }
+        }
+    }
 
-     for (var c = 0; c < {{NUM_COLORS}}; c++) {
-         output[pixel_idx * {{NUM_COLORS}}u + u32(c)] = votes[c] / f32(num_trees);
-     }
- }
+    for (var c = 0; c < {{NUM_COLORS}}; c++) {
+        output[pixel_idx * {{NUM_COLORS}}u + u32(c)] = votes[c] / f32(num_trees);
+    }
+}
 `;
 
 const COMPOSITE_SHADER = `
- struct VertexOutput {
-     @builtin(position) pos: vec4<f32>,
-     @location(0) uv: vec2<f32>,
- };
+struct VertexOutput {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
 
- @vertex
- fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-     var pos = array<vec2<f32>, 4>(vec2(-1,1), vec2(1,1), vec2(-1,-1), vec2(1,-1));
-     var uv = array<vec2<f32>, 4>(vec2(0,0), vec2(1,0), vec2(0,1), vec2(1,1));
-     var out: VertexOutput;
-     out.pos = vec4(pos[idx], 0, 1);
-     out.uv = uv[idx];
-     return out;
- }
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
+    var pos = array<vec2<f32>, 4>(vec2(-1,1), vec2(1,1), vec2(-1,-1), vec2(1,-1));
+    var uv = array<vec2<f32>, 4>(vec2(0,0), vec2(1,0), vec2(0,1), vec2(1,1));
+    var out: VertexOutput;
+    out.pos = vec4(pos[idx], 0, 1);
+    out.uv = uv[idx];
+    return out;
+}
 
- @group(0) @binding(0) var s: sampler;
- @group(0) @binding(1) var t_raw: texture_2d<f32>;
- @group(0) @binding(2) var<storage, read> p_map: array<f32>;
+@group(0) @binding(0) var s: sampler;
+@group(0) @binding(1) var t_raw: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read> p_map: array<f32>;
 
- @fragment
- fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-     let raw = textureSample(t_raw, s, uv);
-     let w = u32({{WIDTH}});
-     let h = u32({{HEIGHT}});
-     let x = u32(uv.x * f32(w));
-     let y = u32(uv.y * f32(h));
-     
-     let base_idx = clamp(y * w + x, 0u, w * h - 1u) * {{NUM_COLORS}}u;
-     var max_p: f32 = -1.0;
-     var best_class: i32 = -1;
-     
-     for (var c = 0u; c < {{NUM_COLORS}}u; c++) {
-         let p = p_map[base_idx + c];
-         if (p > max_p) {
-             max_p = p;
-             best_class = i32(c);
-         }
-     }
-     
-     var alpha: f32 = 0.4;
-     if (max_p < 0.0) { return vec4(raw.rgb, 1.0); }
-     
-     var colors = array<vec4<f32>, {{NUM_COLORS}}>(
-         {{COLORS_ARRAY}}
-     );
+@fragment
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let raw = textureSample(t_raw, s, uv);
+    let w = u32({{WIDTH}});
+    let h = u32({{HEIGHT}});
+    let x = u32(uv.x * f32(w));
+    let y = u32(uv.y * f32(h));
+    
+    let base_idx = clamp(y * w + x, 0u, w * h - 1u) * {{NUM_COLORS}}u;
+    var max_p: f32 = -1.0;
+    var best_class: i32 = -1;
+    
+    for (var c = 0u; c < {{NUM_COLORS}}u; c++) {
+        let p = p_map[base_idx + c];
+        if (p > max_p) {
+            max_p = p;
+            best_class = i32(c);
+        }
+    }
+    
+    var alpha: f32 = 0.4;
+    if (max_p < 0.0) { return vec4(raw.rgb, 1.0); }
+    
+    var colors = array<vec4<f32>, {{NUM_COLORS}}>(
+        {{COLORS_ARRAY}}
+    );
 
-     var overlay = vec4<f32>(0.0, 0.0, 0.0, alpha);
-     if (best_class >= 0 && best_class < {{NUM_COLORS}}) {
-         overlay = colors[best_class];
-         overlay.a = alpha;
-     }
+    var overlay = vec4<f32>(0.0, 0.0, 0.0, alpha);
+    if (best_class >= 0 && best_class < {{NUM_COLORS}}) {
+        overlay = colors[best_class];
+        overlay.a = alpha;
+    }
 
-     return vec4(mix(raw.rgb, overlay.rgb, alpha), 1.0);
- }
+    return vec4(mix(raw.rgb, overlay.rgb, alpha), 1.0);
+}
+`;
+
+/**
+* Three-pass Atomic Parallel Union-Find Engine
+*/
+const CCL_SHADER = `
+@group(0) @binding(0) var<storage, read> probabilities: array<f32>;
+@group(0) @binding(1) var<storage, read_write> labels: array<atomic<u32>>;
+
+// Pass 1: Threshold and allocate individual spatial component coordinates
+@compute @workgroup_size(16, 16)
+fn init_labels(@builtin(global_invocation_id) id: vec3<u32>) {
+    let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
+    if (id.x >= w || id.y >= h) { return; }
+    
+    let pixel_idx = id.y * w + id.x;
+    let base_idx = pixel_idx * {{NUM_COLORS}}u;
+    let p = probabilities[base_idx + {{TARGET_CLASS}}u];
+    
+    if (p >= {{THRESHOLD}}) {
+        atomicStore(&labels[pixel_idx], pixel_idx + 1u); // 1-based index (0 is bg)
+    } else {
+        atomicStore(&labels[pixel_idx], 0u);
+    }
+}
+
+// Pass 2: Connect neighborhood groups using atomic minimizations
+@compute @workgroup_size(16, 16)
+fn merge_neighbors(@builtin(global_invocation_id) id: vec3<u32>) {
+    let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
+    if (id.x >= w || id.y >= h) { return; }
+    
+    let pixel_idx = id.y * w + id.x;
+    let self_label = atomicLoad(&labels[pixel_idx]);
+    if (self_label == 0u) { return; }
+
+    // Connect to right neighbor
+    if (id.x + 1u < w) {
+        let r_idx = id.y * w + (id.x + 1u);
+        let r_label = atomicLoad(&labels[r_idx]);
+        if (r_label != 0u) {
+            merge_roots(pixel_idx, r_idx);
+        }
+    }
+    
+    // Connect to down neighbor
+    if (id.y + 1u < h) {
+        let d_idx = (id.y + 1u) * w + id.x;
+        let d_label = atomicLoad(&labels[d_idx]);
+        if (d_label != 0u) {
+            merge_roots(pixel_idx, d_idx);
+        }
+    }
+}
+
+fn find_root(start_idx: u32) -> u32 {
+    var curr = start_idx;
+    var parent = atomicLoad(&labels[curr]);
+    while (parent != 0u && parent != curr + 1u) {
+        curr = parent - 1u;
+        parent = atomicLoad(&labels[curr]);
+    }
+    return curr + 1u;
+}
+
+fn merge_roots(idx_a: u32, idx_b: u32) {
+    var root_a = find_root(idx_a);
+    var root_b = find_root(idx_b);
+    
+    while (root_a != root_b) {
+        if (root_a < root_b) {
+            let prev = atomicMin(&labels[root_b - 1u], root_a);
+            if (prev == root_b) { break; }
+            root_b = find_root(prev - 1u);
+        } else {
+            let prev = atomicMin(&labels[root_a - 1u], root_b);
+            if (prev == root_a) { break; }
+            root_a = find_root(prev - 1u);
+        }
+    }
+}
+
+// Pass 3: Flatten all tree structures to direct pointers
+@compute @workgroup_size(16, 16)
+fn flatten_paths(@builtin(global_invocation_id) id: vec3<u32>) {
+    let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
+    if (id.x >= w || id.y >= h) { return; }
+    
+    let pixel_idx = id.y * w + id.x;
+    let self_label = atomicLoad(&labels[pixel_idx]);
+    if (self_label == 0u) { return; }
+    
+    let root = find_root(pixel_idx);
+    atomicStore(&labels[pixel_idx], root);
+}
+`;
+
+/**
+* High-Speed Topology Statistics Accumulator
+*/
+const STATS_ACCUMULATOR_SHADER = `
+struct Metrics {
+    area: atomic<u32>,
+    total_intensity: atomic<u32>
+};
+
+@group(0) @binding(0) var<storage, read> labels: array<u32>;
+@group(0) @binding(1) var<storage, read> raw_intensity: array<f32>;
+@group(0) @binding(2) var<storage, read_write> stats: array<Metrics>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
+    if (id.x >= w || id.y >= h) { return; }
+    
+    let pixel_idx = id.y * w + id.x;
+    let label = labels[pixel_idx];
+    
+    if (label == 0u || label >= {{MAX_LABELS}}u) { return; }
+    
+    let intensity_f = raw_intensity[pixel_idx];
+    // Scale standard normalized float values to fixed-point integer spaces
+    let intensity_u = u32(intensity_f * 10000.0);
+    
+    atomicAdd(&stats[label].area, 1u);
+    atomicAdd(&stats[label].total_intensity, intensity_u);
+}
 `;
