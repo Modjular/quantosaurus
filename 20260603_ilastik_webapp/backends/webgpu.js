@@ -159,7 +159,10 @@ export class WebGpuBackend {
 
         this.device.queue.writeBuffer(maxLabelBuffer, 0, new Uint32Array([0]));
 
-        const maxCode = FIND_MAX_LABEL_SHADER.replace(/{{TOTAL_PIXELS}}/g, totalPixels);
+        const maxCode = FIND_MAX_LABEL_SHADER
+                    .replace(/{{WIDTH}}/g, this.width)
+                    .replace(/{{HEIGHT}}/g, this.height);
+
         const maxModule = this.device.createShaderModule({ code: maxCode });
         const maxPipeline = this.device.createComputePipeline({
             layout: 'auto',
@@ -184,8 +187,11 @@ export class WebGpuBackend {
         const maxPass = maxEncoder.beginComputePass();
         maxPass.setPipeline(maxPipeline);
         maxPass.setBindGroup(0, maxBindGroup);
-        // Dispatch enough workgroups of 256 threads to cover all pixels
-        maxPass.dispatchWorkgroups(Math.ceil(totalPixels / 256)); 
+        // Use a 2D dispatch matching the image dimensions
+        maxPass.dispatchWorkgroups(
+            Math.ceil(this.width / 16), 
+            Math.ceil(this.height / 16)
+        );
         maxPass.end();
         
         // Copy the result to the staging buffer
@@ -244,7 +250,7 @@ export class WebGpuBackend {
             layout: statsPipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.labelBuffer } },
-                { binding: 1, resource: { buffer: this.originalTexture } },
+                { binding: 1, resource: this.originalTexture.createView() },
                 { binding: 2, resource: { buffer: this.statsBuffer } }
             ]
         });
@@ -1007,7 +1013,7 @@ struct Metrics {
 };
 
 @group(0) @binding(0) var<storage, read> labels: array<u32>;
-@group(0) @binding(1) var<storage, read> raw_intensity: array<f32>;
+@group(0) @binding(1) var raw_intensity: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read_write> stats: array<Metrics>;
 
 @compute @workgroup_size(16, 16)
@@ -1020,7 +1026,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     
     if (label == 0u || label >= {{MAX_LABELS}}u) { return; }
     
-    let intensity_f = raw_intensity[pixel_idx];
+    // Read directly from the texture using the X/Y coordinates
+    let color = textureLoad(raw_intensity, vec2<i32>(id.xy), 0);
+    let intensity_f = color.r; // Grab the red channel for intensity
     // Scale standard normalized float values to fixed-point integer spaces
     let intensity_u = u32(intensity_f * 10000.0);
     
