@@ -90,10 +90,24 @@ export class WebGpuBackend {
         const pipeMerge = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'merge_neighbors' } });
         const pipeFlatten = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'flatten_paths' } });
 
-        const bindGroup = this.device.createBindGroup({
+        const bindGroupInit = this.device.createBindGroup({
             layout: pipeInit.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.probBuffer } },
+                { binding: 1, resource: { buffer: this.labelBuffer } }
+            ]
+        });
+
+        const bindGroupMerge = this.device.createBindGroup({
+            layout: pipeMerge.getBindGroupLayout(0),
+            entries: [
+                { binding: 1, resource: { buffer: this.labelBuffer } }
+            ]
+        });
+
+        const bindGroupFlatten = this.device.createBindGroup({
+            layout: pipeFlatten.getBindGroupLayout(0),
+            entries: [
                 { binding: 1, resource: { buffer: this.labelBuffer } }
             ]
         });
@@ -105,21 +119,21 @@ export class WebGpuBackend {
         // Pass 1: Initialize values based on raw inference thresholds
         const p1 = enc.beginComputePass();
         p1.setPipeline(pipeInit);
-        p1.setBindGroup(0, bindGroup);
+        p1.setBindGroup(0, bindGroupInit);
         p1.dispatchWorkgroups(dispatchX, dispatchY);
         p1.end();
 
         // Pass 2: Neighborhood boundary checking and equivalence linking
         const p2 = enc.beginComputePass();
         p2.setPipeline(pipeMerge);
-        p2.setBindGroup(0, bindGroup);
+        p2.setBindGroup(0, bindGroupMerge);
         p2.dispatchWorkgroups(dispatchX, dispatchY);
         p2.end();
 
         // Pass 3: Path relaxation (Tree flattening) to find absolute roots
         const p3 = enc.beginComputePass();
         p3.setPipeline(pipeFlatten);
-        p3.setBindGroup(0, bindGroup);
+        p3.setBindGroup(0, bindGroupFlatten);
         p3.dispatchWorkgroups(dispatchX, dispatchY);
         p3.end();
 
@@ -130,9 +144,76 @@ export class WebGpuBackend {
     /**
      * Compiles area and cumulative intensity metric profiles per label ID.
      */
-    async computeStats(maxExpectedLabels = 50000) {
-        // 2 elements per label structure: [u32 area, u32 total_intensity]
-        const statsSize = maxExpectedLabels * 2 * 4; 
+    async computeStats() {
+        const totalPixels = this.width * this.height;
+
+        // =========================================================
+        // PASS 1: Find the Maximum Label
+        // =========================================================
+        
+        // Create a 4-byte buffer to hold the single maximum label value
+        const maxLabelBuffer = this.device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        });
+
+        this.device.queue.writeBuffer(maxLabelBuffer, 0, new Uint32Array([0]));
+
+        const maxCode = FIND_MAX_LABEL_SHADER.replace(/{{TOTAL_PIXELS}}/g, totalPixels);
+        const maxModule = this.device.createShaderModule({ code: maxCode });
+        const maxPipeline = this.device.createComputePipeline({
+            layout: 'auto',
+            compute: { module: maxModule, entryPoint: 'main' }
+        });
+
+        const maxBindGroup = this.device.createBindGroup({
+            layout: maxPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.labelBuffer } },
+                { binding: 1, resource: { buffer: maxLabelBuffer } }
+            ]
+        });
+
+        // We also need a staging buffer to read the result back to the CPU
+        const maxStagingBuffer = this.device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+        });
+
+        const maxEncoder = this.device.createCommandEncoder();
+        const maxPass = maxEncoder.beginComputePass();
+        maxPass.setPipeline(maxPipeline);
+        maxPass.setBindGroup(0, maxBindGroup);
+        // Dispatch enough workgroups of 256 threads to cover all pixels
+        maxPass.dispatchWorkgroups(Math.ceil(totalPixels / 256)); 
+        maxPass.end();
+        
+        // Copy the result to the staging buffer
+        maxEncoder.copyBufferToBuffer(maxLabelBuffer, 0, maxStagingBuffer, 0, 4);
+        this.device.queue.submit([maxEncoder.finish()]);
+
+        // --- CPU/GPU SYNC POINT: Halt and wait for the max label ---
+        await maxStagingBuffer.mapAsync(GPUMapMode.READ);
+        const maxLabelArray = new Uint32Array(maxStagingBuffer.getMappedRange());
+        const maxLabel = maxLabelArray[0];
+        maxStagingBuffer.unmap();
+        
+        // Clean up the temporary max buffers
+        maxLabelBuffer.destroy();
+        maxStagingBuffer.destroy();
+
+        // If the max label is 0, the image is empty. Bail out early!
+        if (maxLabel === 0) return null;
+
+        // Labels are 0-indexed, so the required size is maxLabel + 1
+        const maxExpectedLabels = maxLabel + 1; 
+
+        // =========================================================
+        // PASS 2: Accumulate Statistics
+        // =========================================================
+
+        const statsStructCount = 6; 
+        const statsSize = maxExpectedLabels * statsStructCount * 4; 
 
         if (this.statsBuffer) this.statsBuffer.destroy();
         this.statsBuffer = this.device.createBuffer({
@@ -140,24 +221,27 @@ export class WebGpuBackend {
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
         });
 
-        // Zero out memory architecture
-        const clearEncoder = this.device.createCommandEncoder();
-        clearEncoder.clearBuffer(this.statsBuffer, 0, statsSize);
-        this.device.queue.submit([clearEncoder.finish()]);
+        // Initialize CPU-side array to handle the min_intensity starting value
+        const initData = new Uint32Array(maxExpectedLabels * statsStructCount);
+        for (let i = 0; i < maxExpectedLabels; i++) {
+            initData[i * statsStructCount + 4] = 0xFFFFFFFF; // Set min_intensity to max u32
+        }
+        
+        this.device.queue.writeBuffer(this.statsBuffer, 0, initData);
 
-        const code = STATS_ACCUMULATOR_SHADER
+        const statsCode = STATS_ACCUMULATOR_SHADER
             .replace(/{{WIDTH}}/g, this.width)
             .replace(/{{HEIGHT}}/g, this.height)
             .replace(/{{MAX_LABELS}}/g, maxExpectedLabels);
 
-        const module = this.device.createShaderModule({ code });
-        const pipeline = this.device.createComputePipeline({
+        const statsModule = this.device.createShaderModule({ code: statsCode });
+        const statsPipeline = this.device.createComputePipeline({
             layout: 'auto',
-            compute: { module, entryPoint: 'main' }
+            compute: { module: statsModule, entryPoint: 'main' }
         });
 
-        const bindGroup = this.device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(0),
+        const statsBindGroup = this.device.createBindGroup({
+            layout: statsPipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.labelBuffer } },
                 { binding: 1, resource: { buffer: this.originalTexture } },
@@ -165,13 +249,13 @@ export class WebGpuBackend {
             ]
         });
 
-        const enc = this.device.createCommandEncoder();
-        const pass = enc.beginComputePass();
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, bindGroup);
-        pass.dispatchWorkgroups(Math.ceil(this.width / 16), Math.ceil(this.height / 16));
-        pass.end();
-        this.device.queue.submit([enc.finish()]);
+        const statsEncoder = this.device.createCommandEncoder();
+        const statsPass = statsEncoder.beginComputePass();
+        statsPass.setPipeline(statsPipeline);
+        statsPass.setBindGroup(0, statsBindGroup);
+        statsPass.dispatchWorkgroups(Math.ceil(this.width / 16), Math.ceil(this.height / 16));
+        statsPass.end();
+        this.device.queue.submit([statsEncoder.finish()]);
 
         return this.statsBuffer;
     }
@@ -875,13 +959,51 @@ fn flatten_paths(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+const FIND_MAX_LABEL_SHADER = `
+@group(0) @binding(0) var<storage, read> labels: array<u32>;
+@group(0) @binding(1) var<storage, read_write> global_max: atomic<u32>;
+
+var<workgroup> wg_max: atomic<u32>;
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_index) local_idx: u32
+) {
+    let w = u32({{WIDTH}}); 
+    let h = u32({{HEIGHT}});
+
+    // 1. Initialize the workgroup's shared max variable
+    if (local_idx == 0u) {
+        atomicStore(&wg_max, 0u);
+    }
+    workgroupBarrier();
+
+    // 2. Each thread finds the max in its assigned pixel
+    if (global_id.x < w && global_id.y < h) {
+        let pixel_idx = global_id.y * w + global_id.x;
+        atomicMax(&wg_max, labels[pixel_idx]);
+    }
+    workgroupBarrier();
+
+    // 3. One thread per workgroup pushes the local max to the global max
+    if (local_idx == 0u) {
+        atomicMax(&global_max, atomicLoad(&wg_max));
+    }
+}
+`;
+
 /**
 * High-Speed Topology Statistics Accumulator
 */
 const STATS_ACCUMULATOR_SHADER = `
 struct Metrics {
     area: atomic<u32>,
-    total_intensity: atomic<u32>
+    total_intensity: atomic<u32>,
+    sum_x: atomic<u32>,
+    sum_y: atomic<u32>,
+    min_intensity: atomic<u32>,
+    max_intensity: atomic<u32>
 };
 
 @group(0) @binding(0) var<storage, read> labels: array<u32>;
@@ -902,7 +1024,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Scale standard normalized float values to fixed-point integer spaces
     let intensity_u = u32(intensity_f * 10000.0);
     
+    // Accumulate sums
     atomicAdd(&stats[label].area, 1u);
     atomicAdd(&stats[label].total_intensity, intensity_u);
+    atomicAdd(&stats[label].sum_x, id.x);
+    atomicAdd(&stats[label].sum_y, id.y);
+    
+    // Evaluate Min/Max
+    atomicMin(&stats[label].min_intensity, intensity_u);
+    atomicMax(&stats[label].max_intensity, intensity_u);
 }
 `;
