@@ -266,6 +266,30 @@ export class WebGpuBackend {
         return this.statsBuffer;
     }
 
+    async downloadStats() {
+        const byteSize = this.statsBuffer.size;
+        const stagingBuffer = this.device.createBuffer({
+            size: byteSize,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+
+        const copyEncoder = this.device.createCommandEncoder();
+        copyEncoder.copyBufferToBuffer(
+            this.statsBuffer, 0, // Source buffer & offset
+            stagingBuffer, 0,    // Destination buffer & offset
+            byteSize             // Number of bytes to copy
+        );
+        this.device.queue.submit([copyEncoder.finish()]);
+
+        await stagingBuffer.mapAsync(GPUMapMode.READ);
+        const data = new Uint32Array(stagingBuffer.getMappedRange()).slice();
+
+        stagingBuffer.unmap();
+        stagingBuffer.destroy();
+
+        return data
+    }
+
     /**
      * Downloads computed features back to system RAM.
      */
@@ -276,16 +300,16 @@ export class WebGpuBackend {
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
         });
 
-        const enc = this.device.createCommandEncoder();
-        enc.copyBufferToBuffer(this.labelBuffer, 0, rb, 0, outSize * 4);
-        this.device.queue.submit([enc.finish()]);
+        const copyEncoder = this.device.createCommandEncoder();
+        copyEncoder.copyBufferToBuffer(this.labelBuffer, 0, rb, 0, outSize * 4);
+        this.device.queue.submit([copyEncoder.finish()]);
 
         await rb.mapAsync(GPUMapMode.READ);
-        const res = new Uint32Array(rb.getMappedRange().slice());
+        const data = new Uint32Array(rb.getMappedRange().slice());
         rb.unmap();
         rb.destroy();
         
-        return res;
+        return data;
     }
 
     /**

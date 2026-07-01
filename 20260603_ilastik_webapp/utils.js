@@ -192,6 +192,74 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
 
             filesToZip.push({ name: filename, data: serializedImage.data.buffer });
         }
+
+        const exportLabels = true;
+        if (exportLabels) {
+            // Before export, make sure labels are fully connected, then run stats
+
+            performance.mark('exportLabels')
+            await img.backend.computeConnectedComponents(1);
+            await img.backend.computeStats()
+
+            const labels = await img.backend.downloadLabels()
+            const data = await img.backend.downloadStats()
+
+            const statsStructCount = 6;
+            const numLabels = data.length / statsStructCount
+            console.log("unique vs numLabels", new Set(labels).length, numLabels)
+
+            for (let label = 1; label < numLabels; label++) {
+                const baseIdx = label * statsStructCount;
+                const area = data[baseIdx + 0];
+                
+                if (area === 0) continue; // Label not present
+
+                const totalIntensity = data[baseIdx + 1];
+                const sumX = data[baseIdx + 2];
+                const sumY = data[baseIdx + 3];
+                const minIntensityRaw = data[baseIdx + 4];
+                const maxIntensityRaw = data[baseIdx + 5];
+
+                // Compute the averages
+                const centroidX = sumX / area;
+                const centroidY = sumY / area;
+                const avgIntensityRaw = totalIntensity / area;
+                
+                // If you scaled by 10000.0 in WGSL, scale back down:
+                const minIntensity = minIntensityRaw / 10000.0;
+                const maxIntensity = maxIntensityRaw / 10000.0;
+                const avgIntensity = avgIntensityRaw / 10000.0;
+                
+                // console.log(`Label ${label}: Centroid(${centroidX.toFixed(2)}, ${centroidY.toFixed(2)}), Intensity[Min: ${minIntensity}, Max: ${maxIntensity}, Avg: ${avgIntensity.toFixed(2)}]`);
+            }
+
+            // TODO: Waiting on bugfix from itk-wasm
+            // TODO: https://github.com/InsightSoftwareConsortium/ITK-Wasm/issues/1544
+
+            // const labels = await img.backend.downloadLabels()
+
+            // const itkImage = {
+            //     imageType: {
+            //         dimension: 2,
+            //         pixelType: 'Scalar',
+            //         componentType: 'uint32',
+            //         components: 1
+            //     },
+            //     name: `${baseName}_labels`,
+            //     origin: [0.0, 0.0],
+            //     spacing: [1.0, 1.0],
+            //     direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
+            //     // size: [w, h],
+            //     size: [100, 100],
+            //     metadata: new Map(),
+            //     data: new Uint32Array(100 * 100),
+            // };
+
+            // const filename = `${itkImage.name}.tif`;
+            // const { serializedImage } = await writeImage(itkImage, filename);
+
+            // filesToZip.push({ name: filename, data: serializedImage.data.buffer });
+        }
     }
 
     if (filesToZip.length > 0) {
