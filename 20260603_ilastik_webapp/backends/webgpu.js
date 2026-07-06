@@ -109,6 +109,10 @@ export class WebGpuBackend {
             size: width * height * 4,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
         });
+
+        if (this.featureBuffer) { this.featureBuffer.destroy(); this.featureBuffer = null; }
+        if (this.statsBuffer) { this.statsBuffer.destroy(); this.statsBuffer = null; }
+        if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
     }
 
     async updateFeatures(intensityArray, sigma) {
@@ -318,14 +322,25 @@ export class WebGpuBackend {
     async _extractFeatures(data, scale) {
         const NUM_CHANNELS = 8;
         const outSize = NUM_CHANNELS * this.width * this.height;
+        const maxRadius = 32;
 
         const k0 = gaussian_kernel(scale, 0);
         const k1 = gaussian_kernel(scale, 1);
         const k2 = gaussian_kernel(scale, 2);
         const k0sub = gaussian_kernel(scale * 0.66, 0); // For Difference of Gaussians
 
+        for (const k of [k0, k1, k2, k0sub]) {
+            const radius = k.length - 1;
+            if (radius > maxRadius) {
+                throw new Error(
+                    `_extractFeatures: sigma=${scale} requires a kernel radius of ${radius}, ` +
+                    `which exceeds the supported maximum of ${maxRadius}. Reduce sigma, or raise ` +
+                    `maxRadius here and the matching WGSL Kernels array sizes.`
+                );
+            }
+        }
+
         // --- GPU Resource Allocation ---
-        const maxRadius = 32;
         const kernelBuffer = this.device.createBuffer({
             size: (maxRadius * 4 * 4) + 16,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
