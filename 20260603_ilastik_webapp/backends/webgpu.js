@@ -548,13 +548,38 @@ export class WebGpuBackend {
         });
         this.device.queue.writeBuffer(forestBuffer, 0, rf.forestBuffer);
 
-        const rootsBuffer = this.device.createBuffer({
-            size: 32,
+        const numTrees = rf.treeRoots.length;
+        if (numTrees > 8) {
+            throw new Error(
+                `runInference: ${numTrees} trees provided, but only up to 8 are supported ` +
+                `by the forest_meta uniform layout. Reduce the forest size or widen forest_meta.`
+            );
+        }
+
+        // FIX: previously the tree-roots buffer was zero-filled, and 0 is a valid node
+        // index, not an "empty slot" sentinel -- so forests with fewer than 8 trees had
+        // unused slots silently re-run tree 0's traversal and add phantom votes. Unused
+        // slots must be -1. Also, num_trees was hardcoded to 8 in the shader regardless
+        // of the real forest size, which both biased and mis-normalized every vote.
+        // Both are now sourced from rf.treeRoots.length instead of a hardcoded constant.
+        //
+        // FIX: tree traversal depth was hardcoded to 10 in the shader; any tree deeper
+        // than that silently stopped without reaching a leaf, contributing no vote while
+        // the normalization denominator didn't adjust. max_depth is now real metadata
+        // (falls back to 24 if rf doesn't provide it -- ideally rf.maxDepth should be
+        // set from the true trained depth by whatever builds the forest buffer).
+        const maxDepth = rf.maxDepth ?? 24;
+
+        const forestMeta = new Int32Array(12).fill(-1); // 3x vec4<i32> = 48 bytes
+        forestMeta.set(rf.treeRoots, 0);
+        forestMeta[8] = numTrees;
+        forestMeta[9] = maxDepth;
+
+        const metaBuffer = this.device.createBuffer({
+            size: forestMeta.byteLength,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
-        const paddedRoots = new Int32Array(8);
-        paddedRoots.set(rf.treeRoots);
-        this.device.queue.writeBuffer(rootsBuffer, 0, paddedRoots);
+        this.device.queue.writeBuffer(metaBuffer, 0, forestMeta);
 
         const numColors = this.labelColors.length;
 
@@ -576,7 +601,7 @@ export class WebGpuBackend {
             bindings: [
                 { binding: 0, resource: { buffer: this.featureBuffer } },
                 { binding: 1, resource: { buffer: forestBuffer } },
-                { binding: 2, resource: { buffer: rootsBuffer } },
+                { binding: 2, resource: { buffer: metaBuffer } },
                 { binding: 3, resource: { buffer: this.probBuffer } }
             ],
             dispatchX: Math.ceil(this.width / 16),
@@ -767,8 +792,14 @@ struct Node {
 
 @group(0) @binding(0) var<storage, read> features: array<f32>;
 @group(0) @binding(1) var<storage, read> forest: array<Node>;
-@group(0) @binding(2) var<uniform> tree_roots: array<vec4<i32>, 2>; 
+// forest_meta layout: [0..7] = tree root node indices (-1 = empty slot),
+// [8] = num_trees (actual tree count), [9] = max_depth (real traversal bound), [10..11] = reserved.
+@group(0) @binding(2) var<uniform> forest_meta: array<vec4<i32>, 3>;
 @group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+fn tree_root(t: u32) -> i32 {
+    return forest_meta[t / 4u][t % 4u];
+}
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -779,15 +810,17 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let pixel_idx = y * w + x;
     let feat_offset = pixel_idx * 8u;
-    
+
+    let num_trees = u32(forest_meta[2].x);
+    let max_depth = u32(forest_meta[2].y);
+
     var votes = array<f32, {{NUM_COLORS}}>();
-    var num_trees = 8u; 
 
     for (var t = 0u; t < num_trees; t++) {
-        var node_idx = tree_roots[t/4u][t%4u];
+        var node_idx = tree_root(t);
         if (node_idx < 0) { continue; }
 
-        for (var depth = 0; depth < 10; depth++) {
+        for (var depth = 0u; depth < max_depth; depth++) {
             let node = forest[u32(node_idx)];
             if (node.feat_idx == -1) {
                 let class_id = -node.right - 1;
@@ -805,8 +838,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
+    let denom = max(f32(num_trees), 1.0);
     for (var c = 0; c < {{NUM_COLORS}}; c++) {
-        output[pixel_idx * {{NUM_COLORS}}u + u32(c)] = votes[c] / f32(num_trees);
+        output[pixel_idx * {{NUM_COLORS}}u + u32(c)] = votes[c] / denom;
     }
 }
 `;
