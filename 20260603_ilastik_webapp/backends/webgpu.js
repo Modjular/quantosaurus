@@ -33,6 +33,54 @@ export class WebGpuBackend {
         this.context.configure({ device: this.device, format: this.format });
     }
 
+    /**
+     * Runs a single compute pass on a caller-supplied encoder. Centralizes the
+     * "compile module -> create pipeline -> create bind group -> record pass" boilerplate.
+     *
+     * Multiple calls can share one encoder (e.g. multi-pass pipelines like CCL),
+     * or each call can use its own encoder + submit if passes must be sequenced
+     * around a CPU readback in between.
+     */
+    _addComputePass(encoder, { code, entryPoint, bindings, dispatchX, dispatchY = 1, dispatchZ = 1 }) {
+        const module = this.device.createShaderModule({ code });
+        const pipeline = this.device.createComputePipeline({
+            layout: 'auto',
+            compute: { module, entryPoint }
+        });
+        const bindGroup = this.device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: bindings
+        });
+
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(dispatchX, dispatchY, dispatchZ);
+        pass.end();
+    }
+
+    /**
+     * Copies a GPU buffer back to system RAM: creates a staging buffer, copies,
+     * submits, maps, reads, and cleans up.
+     */
+    async _readBuffer(sourceBuffer, byteLength, ArrayType = Float32Array) {
+        const staging = this.device.createBuffer({
+            size: byteLength,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+
+        const encoder = this.device.createCommandEncoder();
+        encoder.copyBufferToBuffer(sourceBuffer, 0, staging, 0, byteLength);
+        this.device.queue.submit([encoder.finish()]);
+
+        await staging.mapAsync(GPUMapMode.READ);
+        const data = new ArrayType(staging.getMappedRange().slice());
+        staging.unmap();
+        staging.destroy();
+
+        return data;
+    }
+
     async allocateImage(width, height, rgbaData) {
         this.width = width;
         this.height = height;
@@ -74,8 +122,6 @@ export class WebGpuBackend {
      * Processes the live probability buffer entirely on-GPU.
      */
     async computeConnectedComponents(targetClassIdx, threshold = 0.5) {
-        const numPixels = this.width * this.height;
-
         const baseCode = CCL_SHADER
             .replace(/{{WIDTH}}/g, this.width)
             .replace(/{{HEIGHT}}/g, this.height)
@@ -83,58 +129,41 @@ export class WebGpuBackend {
             .replace(/{{TARGET_CLASS}}/g, targetClassIdx)
             .replace(/{{THRESHOLD}}/g, threshold.toFixed(4));
 
-        const module = this.device.createShaderModule({ code: baseCode });
-        
-        const pipeInit = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'init_labels' } });
-        const pipeMerge = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'merge_neighbors' } });
-        const pipeFlatten = this.device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'flatten_paths' } });
-
-        const bindGroupInit = this.device.createBindGroup({
-            layout: pipeInit.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: this.probBuffer } },
-                { binding: 1, resource: { buffer: this.labelBuffer } }
-            ]
-        });
-
-        const bindGroupMerge = this.device.createBindGroup({
-            layout: pipeMerge.getBindGroupLayout(0),
-            entries: [
-                { binding: 1, resource: { buffer: this.labelBuffer } }
-            ]
-        });
-
-        const bindGroupFlatten = this.device.createBindGroup({
-            layout: pipeFlatten.getBindGroupLayout(0),
-            entries: [
-                { binding: 1, resource: { buffer: this.labelBuffer } }
-            ]
-        });
-
-        const enc = this.device.createCommandEncoder();
         const dispatchX = Math.ceil(this.width / 16);
         const dispatchY = Math.ceil(this.height / 16);
 
+        const enc = this.device.createCommandEncoder();
+
         // Pass 1: Initialize values based on raw inference thresholds
-        const p1 = enc.beginComputePass();
-        p1.setPipeline(pipeInit);
-        p1.setBindGroup(0, bindGroupInit);
-        p1.dispatchWorkgroups(dispatchX, dispatchY);
-        p1.end();
+        this._addComputePass(enc, {
+            code: baseCode,
+            entryPoint: 'init_labels',
+            bindings: [
+                { binding: 0, resource: { buffer: this.probBuffer } },
+                { binding: 1, resource: { buffer: this.labelBuffer } }
+            ],
+            dispatchX, dispatchY
+        });
 
         // Pass 2: Neighborhood boundary checking and equivalence linking
-        const p2 = enc.beginComputePass();
-        p2.setPipeline(pipeMerge);
-        p2.setBindGroup(0, bindGroupMerge);
-        p2.dispatchWorkgroups(dispatchX, dispatchY);
-        p2.end();
+        this._addComputePass(enc, {
+            code: baseCode,
+            entryPoint: 'merge_neighbors',
+            bindings: [
+                { binding: 1, resource: { buffer: this.labelBuffer } }
+            ],
+            dispatchX, dispatchY
+        });
 
         // Pass 3: Path relaxation (Tree flattening) to find absolute roots
-        const p3 = enc.beginComputePass();
-        p3.setPipeline(pipeFlatten);
-        p3.setBindGroup(0, bindGroupFlatten);
-        p3.dispatchWorkgroups(dispatchX, dispatchY);
-        p3.end();
+        this._addComputePass(enc, {
+            code: baseCode,
+            entryPoint: 'flatten_paths',
+            bindings: [
+                { binding: 1, resource: { buffer: this.labelBuffer } }
+            ],
+            dispatchX, dispatchY
+        });
 
         this.device.queue.submit([enc.finish()]);
         return this.labelBuffer;
@@ -144,64 +173,39 @@ export class WebGpuBackend {
      * Compiles area and cumulative intensity metric profiles per label ID.
      */
     async computeStats() {
-        const totalPixels = this.width * this.height;
+        const dispatchX = Math.ceil(this.width / 16);
+        const dispatchY = Math.ceil(this.height / 16);
 
         // =========================================================
         // PASS 1: Find the Maximum Label
         // =========================================================
-        
-        // Create a 4-byte buffer to hold the single maximum label value
+
         const maxLabelBuffer = this.device.createBuffer({
             size: 4,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
         });
-
         this.device.queue.writeBuffer(maxLabelBuffer, 0, new Uint32Array([0]));
 
         const maxCode = FIND_MAX_LABEL_SHADER
             .replace(/{{WIDTH}}/g, this.width)
             .replace(/{{HEIGHT}}/g, this.height);
 
-        const maxModule = this.device.createShaderModule({ code: maxCode });
-        const maxPipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: { module: maxModule, entryPoint: 'main' }
-        });
-
-        const maxBindGroup = this.device.createBindGroup({
-            layout: maxPipeline.getBindGroupLayout(0),
-            entries: [
+        const maxEncoder = this.device.createCommandEncoder();
+        this._addComputePass(maxEncoder, {
+            code: maxCode,
+            entryPoint: 'main',
+            bindings: [
                 { binding: 0, resource: { buffer: this.labelBuffer } },
                 { binding: 1, resource: { buffer: maxLabelBuffer } }
-            ]
+            ],
+            dispatchX, dispatchY
         });
-
-        const maxStagingBuffer = this.device.createBuffer({
-            size: 4,
-            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
-        });
-
-        const maxEncoder = this.device.createCommandEncoder();
-        const maxPass = maxEncoder.beginComputePass();
-        maxPass.setPipeline(maxPipeline);
-        maxPass.setBindGroup(0, maxBindGroup);
-        maxPass.dispatchWorkgroups(
-            Math.ceil(this.width / 16), 
-            Math.ceil(this.height / 16)
-        );
-        maxPass.end();
-
-        maxEncoder.copyBufferToBuffer(maxLabelBuffer, 0, maxStagingBuffer, 0, 4);
         this.device.queue.submit([maxEncoder.finish()]);
 
         // --- CPU/GPU SYNC POINT: Halt and wait for the max label ---
-        await maxStagingBuffer.mapAsync(GPUMapMode.READ);
-        const maxLabelArray = new Uint32Array(maxStagingBuffer.getMappedRange());
+        const maxLabelArray = await this._readBuffer(maxLabelBuffer, 4, Uint32Array);
         const maxLabel = maxLabelArray[0];
-        maxStagingBuffer.unmap();
-
         maxLabelBuffer.destroy();
-        maxStagingBuffer.destroy();
 
         // If the max label is 0, the image is empty.
         if (maxLabel === 0) return null;
@@ -233,27 +237,17 @@ export class WebGpuBackend {
             .replace(/{{HEIGHT}}/g, this.height)
             .replace(/{{MAX_LABELS}}/g, maxExpectedLabels);
 
-        const statsModule = this.device.createShaderModule({ code: statsCode });
-        const statsPipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: { module: statsModule, entryPoint: 'main' }
-        });
-
-        const statsBindGroup = this.device.createBindGroup({
-            layout: statsPipeline.getBindGroupLayout(0),
-            entries: [
+        const statsEncoder = this.device.createCommandEncoder();
+        this._addComputePass(statsEncoder, {
+            code: statsCode,
+            entryPoint: 'main',
+            bindings: [
                 { binding: 0, resource: { buffer: this.labelBuffer } },
                 { binding: 1, resource: this.originalTexture.createView() },
                 { binding: 2, resource: { buffer: this.statsBuffer } }
-            ]
+            ],
+            dispatchX, dispatchY
         });
-
-        const statsEncoder = this.device.createCommandEncoder();
-        const statsPass = statsEncoder.beginComputePass();
-        statsPass.setPipeline(statsPipeline);
-        statsPass.setBindGroup(0, statsBindGroup);
-        statsPass.dispatchWorkgroups(Math.ceil(this.width / 16), Math.ceil(this.height / 16));
-        statsPass.end();
         this.device.queue.submit([statsEncoder.finish()]);
 
         // =========================================================
@@ -278,56 +272,28 @@ export class WebGpuBackend {
             .replace(/{{HEIGHT}}/g, this.height)
             .replace(/{{MAX_LABELS}}/g, maxExpectedLabels);
 
-        const compactModule = this.device.createShaderModule({ code: compactCode });
-        const compactPipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: { module: compactModule, entryPoint: 'main' }
-        });
-
-        const compactBindGroup = this.device.createBindGroup({
-            layout: compactPipeline.getBindGroupLayout(0),
-            entries: [
+        const compactEncoder = this.device.createCommandEncoder();
+        this._addComputePass(compactEncoder, {
+            code: compactCode,
+            entryPoint: 'main',
+            bindings: [
                 { binding: 0, resource: { buffer: this.statsBuffer } },   // The sparse buffer
                 { binding: 1, resource: { buffer: compactStatsBuffer } }, // The dense buffer
                 { binding: 2, resource: { buffer: counterBuffer } }       // The atomic counter
-            ]
+            ],
+            dispatchX, dispatchY
         });
-
-        const compactEncoder = this.device.createCommandEncoder();
-        const compactPass = compactEncoder.beginComputePass();
-        compactPass.setPipeline(compactPipeline);
-        compactPass.setBindGroup(0, compactBindGroup);
-        compactPass.dispatchWorkgroups(
-            Math.ceil(this.width / 16), 
-            Math.ceil(this.height / 16)
-        ); 
-        compactPass.end();
-
         this.device.queue.submit([compactEncoder.finish()]);
 
         if (this.statsBuffer) this.statsBuffer.destroy();
         if (this.statsCounterBuffer) this.statsCounterBuffer.destroy();
-        this.statsBuffer = compactStatsBuffer; 
+        this.statsBuffer = compactStatsBuffer;
         this.statsCounterBuffer = counterBuffer;
     }
 
     async downloadStats() {
-        const denseBuffer = this.statsBuffer
-        const counterBuffer = this.statsCounterBuffer
-
-        const counterStaging = this.device.createBuffer({
-            size: 4,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-        });
-        
-        let encoder = this.device.createCommandEncoder();
-        encoder.copyBufferToBuffer(counterBuffer, 0, counterStaging, 0, 4);
-        this.device.queue.submit([encoder.finish()]);
-        
-        await counterStaging.mapAsync(GPUMapMode.READ);
-        const numObjects = new Uint32Array(counterStaging.getMappedRange())[0];
-        counterStaging.unmap();
-        counterStaging.destroy();
+        const counterData = await this._readBuffer(this.statsCounterBuffer, 4, Uint32Array);
+        const numObjects = counterData[0];
 
         // If no objects were found, bail early!
         if (numObjects === 0) return new Uint32Array(0);
@@ -335,25 +301,7 @@ export class WebGpuBackend {
         const denseStructCount = 7; // label, area, total_intensity, sum_x, sum_y, min, max
         const bytesToCopy = numObjects * denseStructCount * 4;
 
-        const dataStaging = this.device.createBuffer({
-            size: bytesToCopy,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-        });
-
-        encoder = this.device.createCommandEncoder();
-        encoder.copyBufferToBuffer(
-            denseBuffer, 0,    // Source
-            dataStaging, 0,    // Destination
-            bytesToCopy        // Only the data, no air
-        );
-        this.device.queue.submit([encoder.finish()]);
-
-        await dataStaging.mapAsync(GPUMapMode.READ);
-        const data = new Uint32Array(dataStaging.getMappedRange()).slice();
-        dataStaging.unmap();
-        dataStaging.destroy();
-
-        return data;
+        return this._readBuffer(this.statsBuffer, bytesToCopy, Uint32Array);
     }
 
     /**
@@ -361,21 +309,7 @@ export class WebGpuBackend {
      */
     async downloadLabels() {
         const outSize = this.width * this.height;
-        const rb = this.device.createBuffer({
-            size: outSize * 4,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-        });
-
-        const copyEncoder = this.device.createCommandEncoder();
-        copyEncoder.copyBufferToBuffer(this.labelBuffer, 0, rb, 0, outSize * 4);
-        this.device.queue.submit([copyEncoder.finish()]);
-
-        await rb.mapAsync(GPUMapMode.READ);
-        const data = new Uint32Array(rb.getMappedRange().slice());
-        rb.unmap();
-        rb.destroy();
-        
-        return data;
+        return this._readBuffer(this.labelBuffer, outSize * 4, Uint32Array);
     }
 
     /**
@@ -514,23 +448,32 @@ export class WebGpuBackend {
             }
         `;
 
-        const modH = this.device.createShaderModule({ code: horizShader });
-        const modV = this.device.createShaderModule({ code: vertShader });
-        const pipeH = this.device.createComputePipeline({ layout: 'auto', compute: { module: modH, entryPoint: 'main' } });
-        const pipeV = this.device.createComputePipeline({ layout: 'auto', compute: { module: modV, entryPoint: 'main' } });
-
-        const bgH = this.device.createBindGroup({
-            layout: pipeH.getBindGroupLayout(0),
-            entries: [{ binding: 0, resource: { buffer: gpuInput } }, { binding: 1, resource: { buffer: gpuHoriz } }, { binding: 2, resource: { buffer: kernelBuffer } }]
-        });
-        const bgV = this.device.createBindGroup({
-            layout: pipeV.getBindGroupLayout(0),
-            entries: [{ binding: 0, resource: { buffer: gpuHoriz } }, { binding: 1, resource: { buffer: gpuOutput } }, { binding: 2, resource: { buffer: kernelBuffer } }]
-        });
-
         const enc = this.device.createCommandEncoder();
-        const p1 = enc.beginComputePass(); p1.setPipeline(pipeH); p1.setBindGroup(0, bgH); p1.dispatchWorkgroups(Math.ceil(this.width/16), Math.ceil(this.height/16)); p1.end();
-        const p2 = enc.beginComputePass(); p2.setPipeline(pipeV); p2.setBindGroup(0, bgV); p2.dispatchWorkgroups(Math.ceil(this.width/16), Math.ceil(this.height/16)); p2.end();
+        const dispatchX = Math.ceil(this.width / 16);
+        const dispatchY = Math.ceil(this.height / 16);
+
+        this._addComputePass(enc, {
+            code: horizShader,
+            entryPoint: 'main',
+            bindings: [
+                { binding: 0, resource: { buffer: gpuInput } },
+                { binding: 1, resource: { buffer: gpuHoriz } },
+                { binding: 2, resource: { buffer: kernelBuffer } }
+            ],
+            dispatchX, dispatchY
+        });
+
+        this._addComputePass(enc, {
+            code: vertShader,
+            entryPoint: 'main',
+            bindings: [
+                { binding: 0, resource: { buffer: gpuHoriz } },
+                { binding: 1, resource: { buffer: gpuOutput } },
+                { binding: 2, resource: { buffer: kernelBuffer } }
+            ],
+            dispatchX, dispatchY
+        });
+
         this.device.queue.submit([enc.finish()]);
 
         if (!(data instanceof GPUBuffer)) gpuInput.destroy();
@@ -543,16 +486,7 @@ export class WebGpuBackend {
     async downloadFeatures(intensityArray, scale) {
         const gpuOutput = await this._extractFeatures(intensityArray, scale);
         const outSize = 8 * this.width * this.height;
-        const rb = this.device.createBuffer({ size: outSize * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-
-        const enc = this.device.createCommandEncoder();
-        enc.copyBufferToBuffer(gpuOutput, 0, rb, 0, outSize * 4);
-        this.device.queue.submit([enc.finish()]);
-
-        await rb.mapAsync(GPUMapMode.READ);
-        const res = new Float32Array(rb.getMappedRange().slice());
-        rb.unmap();
-        rb.destroy();
+        const res = await this._readBuffer(gpuOutput, outSize * 4, Float32Array);
         gpuOutput.destroy();
         return res;
     }
@@ -571,43 +505,23 @@ export class WebGpuBackend {
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
         });
 
-        const stagingBuffer = this.device.createBuffer({
-            size: gatherDstSize,
-            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
-        });
-
-        const module = this.device.createShaderModule({ code: GATHER_FEATURES_SHADER });
-        const pipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: { module, entryPoint: 'main' }
-        });
-
-        const bindGroup = this.device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(0),
-            entries: [
+        const enc = this.device.createCommandEncoder();
+        this._addComputePass(enc, {
+            code: GATHER_FEATURES_SHADER,
+            entryPoint: 'main',
+            bindings: [
                 { binding: 0, resource: { buffer: this.featureBuffer } },
                 { binding: 1, resource: { buffer: indicesBuffer } },
                 { binding: 2, resource: { buffer: gatherDstBuffer } }
-            ]
+            ],
+            dispatchX: Math.ceil(numLabels / 64)
         });
-
-        const enc = this.device.createCommandEncoder();
-        const pass = enc.beginComputePass();
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, bindGroup);
-        pass.dispatchWorkgroups(Math.ceil(numLabels / 64));
-        pass.end();
-
-        enc.copyBufferToBuffer(gatherDstBuffer, 0, stagingBuffer, 0, gatherDstSize);
         this.device.queue.submit([enc.finish()]);
 
-        await stagingBuffer.mapAsync(GPUMapMode.READ);
-        const features = new Float32Array(stagingBuffer.getMappedRange().slice());
-        stagingBuffer.unmap();
+        const features = await this._readBuffer(gatherDstBuffer, gatherDstSize, Float32Array);
 
         indicesBuffer.destroy();
         gatherDstBuffer.destroy();
-        stagingBuffer.destroy();
 
         return features;
     }
@@ -640,29 +554,23 @@ export class WebGpuBackend {
             .replace(/{{HEIGHT}}/g, this.height)
             .replace(/{{NUM_COLORS}}/g, numColors);
 
-        const module = this.device.createShaderModule({ code });
-        const pipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: { module, entryPoint: "main" }
-        });
-
-        const bindGroup = this.device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(0),
-            entries: [
+        const enc = this.device.createCommandEncoder();
+        this._addComputePass(enc, {
+            code,
+            entryPoint: 'main',
+            bindings: [
                 { binding: 0, resource: { buffer: this.featureBuffer } },
                 { binding: 1, resource: { buffer: forestBuffer } },
                 { binding: 2, resource: { buffer: rootsBuffer } },
                 { binding: 3, resource: { buffer: this.probBuffer } }
-            ]
+            ],
+            dispatchX: Math.ceil(this.width / 16),
+            dispatchY: Math.ceil(this.height / 16)
         });
-
-        const enc = this.device.createCommandEncoder();
-        const pass = enc.beginComputePass();
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, bindGroup);
-        pass.dispatchWorkgroups(Math.ceil(this.width / 16), Math.ceil(this.height / 16));
-        pass.end();
         this.device.queue.submit([enc.finish()]);
+
+        forestBuffer.destroy();
+        metaBuffer.destroy();
 
         this.renderComposite();
     }
@@ -714,21 +622,7 @@ export class WebGpuBackend {
     async downloadProbabilities() {
         const numColors = this.labelColors.length;
         const outSize = this.width * this.height * numColors;
-        const rb = this.device.createBuffer({
-            size: outSize * 4,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-        });
-
-        const enc = this.device.createCommandEncoder();
-        enc.copyBufferToBuffer(this.probBuffer, 0, rb, 0, outSize * 4);
-        this.device.queue.submit([enc.finish()]);
-
-        await rb.mapAsync(GPUMapMode.READ);
-        const res = new Float32Array(rb.getMappedRange().slice());
-        rb.unmap();
-        rb.destroy();
-        
-        return res;
+        return this._readBuffer(this.probBuffer, outSize * 4, Float32Array);
     }
 }
 
