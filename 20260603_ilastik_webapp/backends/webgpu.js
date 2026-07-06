@@ -22,11 +22,11 @@ export class WebGpuBackend {
     async initialize(canvas) {
         if (!navigator.gpu) throw new Error("WebGPU not supported");
         const adapter = await navigator.gpu.requestAdapter();
-        
+
         const requiredLimits = {};
         if (adapter.limits.maxBufferSize) requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
         if (adapter.limits.maxStorageBufferBindingSize) requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
-        
+
         this.device = await adapter.requestDevice({ requiredLimits });
         this.context = canvas.getContext('webgpu');
         this.format = navigator.gpu.getPreferredCanvasFormat();
@@ -159,8 +159,8 @@ export class WebGpuBackend {
         this.device.queue.writeBuffer(maxLabelBuffer, 0, new Uint32Array([0]));
 
         const maxCode = FIND_MAX_LABEL_SHADER
-                    .replace(/{{WIDTH}}/g, this.width)
-                    .replace(/{{HEIGHT}}/g, this.height);
+            .replace(/{{WIDTH}}/g, this.width)
+            .replace(/{{HEIGHT}}/g, this.height);
 
         const maxModule = this.device.createShaderModule({ code: maxCode });
         const maxPipeline = this.device.createComputePipeline({
@@ -207,14 +207,14 @@ export class WebGpuBackend {
         if (maxLabel === 0) return null;
 
         // Labels are 0-indexed, so the required size is maxLabel + 1
-        const maxExpectedLabels = maxLabel + 1; 
+        const maxExpectedLabels = maxLabel + 1;
 
         // =========================================================
         // PASS 2: Accumulate Statistics
         // =========================================================
 
-        const statsStructCount = 6; 
-        const statsSize = maxExpectedLabels * statsStructCount * 4; 
+        const statsStructCount = 6;
+        const statsSize = maxExpectedLabels * statsStructCount * 4;
 
         if (this.statsBuffer) this.statsBuffer.destroy();
         this.statsBuffer = this.device.createBuffer({
@@ -226,7 +226,6 @@ export class WebGpuBackend {
         for (let i = 0; i < maxExpectedLabels; i++) {
             initData[i * statsStructCount + 4] = 0xFFFFFFFF; // Set min_intensity to max u32
         }
-        
         this.device.queue.writeBuffer(this.statsBuffer, 0, initData);
 
         const statsCode = STATS_ACCUMULATOR_SHADER
@@ -555,7 +554,6 @@ export class WebGpuBackend {
         rb.unmap();
         rb.destroy();
         gpuOutput.destroy();
-        
         return res;
     }
 
@@ -869,7 +867,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = u32({{WIDTH}});
     let h = u32({{HEIGHT}});
     if (x >= w || y >= h) { return; }
-    
+
     let pixel_idx = y * w + x;
     let feat_offset = pixel_idx * 8u;
     
@@ -931,11 +929,11 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let h = u32({{HEIGHT}});
     let x = u32(uv.x * f32(w));
     let y = u32(uv.y * f32(h));
-    
+
     let base_idx = clamp(y * w + x, 0u, w * h - 1u) * {{NUM_COLORS}}u;
     var max_p: f32 = -1.0;
     var best_class: i32 = -1;
-    
+
     for (var c = 0u; c < {{NUM_COLORS}}u; c++) {
         let p = p_map[base_idx + c];
         if (p > max_p) {
@@ -943,10 +941,10 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
             best_class = i32(c);
         }
     }
-    
+
     var alpha: f32 = 0.4;
     if (max_p < 0.0) { return vec4(raw.rgb, 1.0); }
-    
+
     var colors = array<vec4<f32>, {{NUM_COLORS}}>(
         {{COLORS_ARRAY}}
     );
@@ -973,11 +971,11 @@ const CCL_SHADER = `
 fn init_labels(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
     if (id.x >= w || id.y >= h) { return; }
-    
+
     let pixel_idx = id.y * w + id.x;
     let base_idx = pixel_idx * {{NUM_COLORS}}u;
     let p = probabilities[base_idx + {{TARGET_CLASS}}u];
-    
+
     if (p >= {{THRESHOLD}}) {
         atomicStore(&labels[pixel_idx], pixel_idx + 1u); // 1-based index (0 is bg)
     } else {
@@ -990,7 +988,7 @@ fn init_labels(@builtin(global_invocation_id) id: vec3<u32>) {
 fn merge_neighbors(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
     if (id.x >= w || id.y >= h) { return; }
-    
+
     let pixel_idx = id.y * w + id.x;
     let self_label = atomicLoad(&labels[pixel_idx]);
     if (self_label == 0u) { return; }
@@ -1003,7 +1001,7 @@ fn merge_neighbors(@builtin(global_invocation_id) id: vec3<u32>) {
             merge_roots(pixel_idx, r_idx);
         }
     }
-    
+
     // Connect to down neighbor
     if (id.y + 1u < h) {
         let d_idx = (id.y + 1u) * w + id.x;
@@ -1027,7 +1025,7 @@ fn find_root(start_idx: u32) -> u32 {
 fn merge_roots(idx_a: u32, idx_b: u32) {
     var root_a = find_root(idx_a);
     var root_b = find_root(idx_b);
-    
+
     while (root_a != root_b) {
         if (root_a < root_b) {
             let prev = atomicMin(&labels[root_b - 1u], root_a);
@@ -1046,11 +1044,11 @@ fn merge_roots(idx_a: u32, idx_b: u32) {
 fn flatten_paths(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
     if (id.x >= w || id.y >= h) { return; }
-    
+
     let pixel_idx = id.y * w + id.x;
     let self_label = atomicLoad(&labels[pixel_idx]);
     if (self_label == 0u) { return; }
-    
+
     let root = find_root(pixel_idx);
     atomicStore(&labels[pixel_idx], root);
 }
@@ -1067,7 +1065,7 @@ fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_index) local_idx: u32
 ) {
-    let w = u32({{WIDTH}}); 
+    let w = u32({{WIDTH}});
     let h = u32({{HEIGHT}});
 
     // 1. Initialize the workgroup's shared max variable
@@ -1111,24 +1109,24 @@ struct Metrics {
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
     if (id.x >= w || id.y >= h) { return; }
-    
+
     let pixel_idx = id.y * w + id.x;
     let label = labels[pixel_idx];
-    
+
     if (label == 0u || label >= {{MAX_LABELS}}u) { return; }
-    
+
     // Read directly from the texture using the X/Y coordinates
     let color = textureLoad(raw_intensity, vec2<i32>(id.xy), 0);
     let intensity_f = color.r; // Grab the red channel for intensity
     // Scale standard normalized float values to fixed-point integer spaces
     let intensity_u = u32(intensity_f * 10000.0);
-    
+
     // Accumulate sums
     atomicAdd(&stats[label].area, 1u);
     atomicAdd(&stats[label].total_intensity, intensity_u);
     atomicAdd(&stats[label].sum_x, id.x);
     atomicAdd(&stats[label].sum_y, id.y);
-    
+
     // Evaluate Min/Max
     atomicMin(&stats[label].min_intensity, intensity_u);
     atomicMax(&stats[label].max_intensity, intensity_u);
@@ -1163,13 +1161,13 @@ struct DenseMetrics {
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = {{WIDTH}}u;
     let h = {{HEIGHT}}u;
-    
+
     // Check texture bounds
     if (id.x >= w || id.y >= h) { return; }
-    
+
     // Map 2D coordinates to the 1D label index
     let label_idx = id.y * w + id.x;
-    
+
     // Check against the maximum expected labels found in Pass 1
     if (label_idx >= {{MAX_LABELS}}u) { return; }
     if (label_idx == 0u) { return; }
@@ -1177,7 +1175,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let area = atomicLoad(&sparse_stats[label_idx].area);
     if (area > 0u) {
         let write_idx = atomicAdd(&counter, 1u);
-        
+
         compact_stats[write_idx].label = label_idx;
         compact_stats[write_idx].area = area;
         compact_stats[write_idx].total_intensity = atomicLoad(&sparse_stats[label_idx].total_intensity);
