@@ -671,29 +671,7 @@ export class WebGpuBackend {
         if (!this.originalTexture || !this.probBuffer) return;
 
         const colors = this.labelColors;
-
-        function parseColor(c) {
-            // rgba
-            let m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),?\s*([\d.]+)?\)/);
-            if (m) {
-                const r = (m[1]/255).toFixed(3);
-                const g = (m[2]/255).toFixed(3);
-                const b = (m[3]/255).toFixed(3);
-                return `vec4<f32>(${r}, ${g}, ${b}, ${m[4] || '0.8'})`;
-            }
-
-            // hex
-            m = c.match(/^#([0-9a-f]{6})$/i)[1];
-            if(m) {
-                const r = (parseInt(m.substr(0,2),16)/255).toFixed(3);
-                const g = (parseInt(m.substr(2,2),16)/255).toFixed(3);
-                const b = (parseInt(m.substr(4,2),16)/255).toFixed(3);
-                return `vec4<f32>(${r}, ${g}, ${b}, 0.8)`;
-            }
-            return "vec4<f32>(1.0, 0.0, 0.0, 1.0)";
-        }
-        
-        const colorsWGSL = colors.map(parseColor).join(',\n            ');
+        const colorsWGSL = colors.map(parseColorToWGSL).join(',\n            ');
 
         const code = COMPOSITE_SHADER
             .replace(/{{WIDTH}}/g, this.width)
@@ -821,6 +799,28 @@ function gaussian_kernel(scale, order = 0) {
   // Return the half-kernel to save GPU uniform space
   for (let i = 0; i <= radius; i++) kernel[i] = fullKernel[radius + i];
   return kernel;
+}
+
+/**
+ * Converts any valid CSS color string (hex3/6/8, rgb/rgba, hsl/hsla, named
+ * colors, etc.) into a WGSL vec4<f32> literal, by letting the browser's own
+ * CSS color parser do the work via a 1x1 canvas instead of hand-rolled regex.
+ */
+let _colorParseCtx = null;
+function parseColorToWGSL(colorStr) {
+    if (!_colorParseCtx) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        _colorParseCtx = canvas.getContext('2d', { willReadFrequently: true });
+    }
+    const ctx = _colorParseCtx;
+    ctx.fillStyle = '#ff0000'; // fallback color if the string below fails to parse
+    ctx.fillStyle = colorStr;  // no-op (silently ignored) if colorStr isn't valid CSS
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    return `vec4<f32>(${(r / 255).toFixed(3)}, ${(g / 255).toFixed(3)}, ${(b / 255).toFixed(3)}, ${(a / 255).toFixed(3)})`;
 }
 
 /**
