@@ -103,8 +103,7 @@
     import { state, LABEL_COLORS } from './js/state.js';
     import { setupCamera } from './js/camera.js';
     import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './js/images.js';
-    import { syncUI } from './js/ui.js';
-    import { zipImages } from './js/utils.js';
+    import { zipImages } from './js/export.js';
 
     function init() {
         const viewport = document.getElementById('viewport');
@@ -222,30 +221,6 @@
             }
         };
     }
-
-    // --- NEW: Global hook to update stats ---
-    // Call this from imageManager.js after scheduleTrainAndPredictAll finishes its work
-    window.refreshClassStats = async (activeImage) => {
-        if (!activeImage || !activeImage.backend || typeof activeImage.backend.computeStats !== 'function') return;
-        
-        try {
-            const stats = await activeImage.backend.computeStats();
-            
-            // NOTE: You might need to adjust `classData.count` depending on 
-            // the exact data structure returned by your computeStats() method!
-            LABEL_COLORS.forEach((_, index) => {
-                const badge = document.getElementById(`stat-class-${index}`);
-                if (badge) {
-                    const classData = stats[index] || {};
-                    const count = classData.count || 0; // <-- adjust property key here
-                    badge.innerText = count > 0 ? count : '0';
-                    badge.style.opacity = count > 0 ? '1' : '0.3';
-                }
-            });
-        } catch (err) {
-            console.error("Failed to refresh stats:", err);
-        }
-    };
 
     init();
 

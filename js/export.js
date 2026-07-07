@@ -1,114 +1,5 @@
-import { readImage, writeImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
+import { writeImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
 
-
-/**
- * Loads an image file into a typed array, handling both TIFFs and standard web formats.
- * @param {File} file - The image file to load.
- * @returns {Promise<{intensityArray: Float32Array, rgba: Uint8Array|Uint8ClampedArray, w: number, h: number}>} An object containing the normalized intensity array, the raw RGBA array, and the dimensions.
- */
-export async function loadFileIntoArray(file) {
-  let data, rgba, w, h, shape;
-
-  if (file.name.endsWith('.tif') || file.name.endsWith('.tiff')) {
-    const { image } = await readImage(file)
-
-    w = image.size[0]
-    h = image.size[1]
-    rgba = new Uint8Array(image.data.length * 4)
-    data = image.data
-    shape = image.size
-  } else {
-    const img = await createImageBitmap(file);
-    w = img.width;
-    h = img.height;
-    const off = new OffscreenCanvas(w, h);
-    const ctx = off.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    rgba = ctx.getImageData(0, 0, w, h).data;
-    data = new Float32Array(w * h)
-    shape = [w, h]
-
-    // Convert RGBA to intensity
-    for (let i = 0; i < w * h; i++) {
-        const r = rgba[i * 4] / 255;
-        const g = rgba[i * 4 + 1] / 255;
-        const b = rgba[i * 4 + 2] / 255;
-        data[i] = 0.299 * r + 0.587 * g + 0.114 * b;
-    }
-  }
-
-  const intensityArray = new Float32Array(w * h);
-  intensityToRGBA(data, rgba, intensityArray);
-
-  return { intensityArray, rgba, w, h, shape}
-}
-
-/**
- * Normalizes an intensity array and converts it to RGBA.
- * @param {Float32Array|Array} data - The input data to normalize.
- * @param {Uint8Array|Uint8ClampedArray} rgba - Array to write RGBA values.
- * @param {Float32Array} [intensityArray] - Optional array to write normalized intensities.
- */
-export function intensityToRGBA(data, rgba, intensityArray) {
-    let [min, max] = [Infinity, -Infinity];
-    const n = data.length;
-    for (let i = 0; i < n; i++) {
-        if (data[i] < min) min = data[i];
-        if (data[i] > max) max = data[i];
-    }
-
-    const range = (max - min) > 0 ? (max - min) : 255;
-    for (let i = 0; i < n; i++) {
-        const norm = (data[i] - min) / range;
-        if (intensityArray) intensityArray[i] = norm;
-
-        const val8 = norm * 255;
-        rgba[i * 4] = val8;
-        rgba[i * 4 + 1] = val8;
-        rgba[i * 4 + 2] = val8;
-        rgba[i * 4 + 3] = 255;
-    }
-}
-
-
-/**
- * Aggregates features and labels across all images into 1D typed arrays for Random Forest training.
- * @param {Array<Object>} images - Array of image objects containing labels and a backend to gather features.
- * @param {number} totalLabels - The total number of labels across all images.
- * @returns {Promise<{combinedX: Float32Array, yArray: Int32Array}>} An object containing the concatenated features (combinedX) and their corresponding labels (yArray).
- */
-export async function buildTrainingDataset(images, totalLabels) {
-    const allX = [];
-    const yArray = new Int32Array(totalLabels);
-    let currentLabelOffset = 0;
-
-    for (const img of images) {
-        const numLabels = img.labels.length;
-        if (numLabels === 0) continue;
-
-        const indicesArray = new Uint32Array(numLabels);
-        for (let i = 0; i < numLabels; i++) {
-            const l = img.labels[i];
-            indicesArray[i] = l.y * img.width + l.x;
-            yArray[currentLabelOffset + i] = l.cls;
-        }
-
-        const X_img = await img.backend.gatherFeaturesForTraining(indicesArray);
-        allX.push(X_img);
-        currentLabelOffset += numLabels;
-    }
-
-    const totalFeatureLength = allX.reduce((sum, arr) => sum + arr.length, 0);
-    const combinedX = new Float32Array(totalFeatureLength);
-    let xOffset = 0;
-    
-    for (const arr of allX) {
-        combinedX.set(arr, xOffset);
-        xOffset += arr.length;
-    }
-
-    return { combinedX, yArray };
-}
 
 /**
  * Handles generating ITK images and batching files into ZIPs.
@@ -223,7 +114,7 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
             for (let i = 0; i < 10 * statsStructCount; i += statsStructCount) {
                 const label = data[i + 0]
                 const area = data[i + 1];
-                
+
                 if (area === 0) continue; // Label not present
 
                 const totalIntensity = data[i + 2];
@@ -236,12 +127,12 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
                 const centroidX = sumX / area;
                 const centroidY = sumY / area;
                 const avgIntensityRaw = totalIntensity / area;
-                
+
                 // If you scaled by 10000.0 in WGSL, scale back down:
                 const minIntensity = minIntensityRaw / 10000.0;
                 const maxIntensity = maxIntensityRaw / 10000.0;
                 const avgIntensity = avgIntensityRaw / 10000.0;
-                
+
                 console.log(`Label ${label}: Centroid(${centroidX.toFixed(2)}, ${centroidY.toFixed(2)}), Intensity[Min: ${minIntensity}, Max: ${maxIntensity}, Avg: ${avgIntensity.toFixed(2)}]`);
             }
 
@@ -282,15 +173,15 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
         return new Promise((resolve, reject) => {
             const workerCode = `
                 importScripts(new URL('/js/vendor/jszip.min.js', self.location.origin).href);
-                
+
                 self.onmessage = async function(e) {
                     const files = e.data;
                     const zip = new JSZip();
-                    
+
                     for (const file of files) {
                         zip.file(file.name, file.data);
                     }
-                    
+
                     try {
                         const content = await zip.generateAsync({ type: "uint8array" }, (metadata) => {
                             self.postMessage({ type: 'progress', metadata });
@@ -311,13 +202,13 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
 
                 if (type === 'progress') {
                     callback(metadata);
-                } 
+                }
                 else if (type === 'done') {
                     worker.terminate();
                     URL.revokeObjectURL(workerUrl); // Cleanup
                     const blob = new Blob([content], { type: 'application/zip' });
                     resolve(blob);
-                } 
+                }
                 else if (type === 'error') {
                     worker.terminate();
                     URL.revokeObjectURL(workerUrl);
@@ -331,46 +222,3 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
         });
     }
 }
-
-/**
- * Returns an array of pixel coordinates that fall within a given radius of a center point.
- * @param {number} cx - The x-coordinate of the center.
- * @param {number} cy - The y-coordinate of the center.
- * @param {number} radius - The radius of the circle.
- * @param {number} width - The width of the bounding canvas/image.
- * @param {number} height - The height of the bounding canvas/image.
- * @returns {Array<{x: number, y: number}>} Array of point objects containing the coordinates within the radius.
- */
-export function getPixelsInRadius(cx, cy, radius, width, height) {
-    const pixels = [];
-    
-    // Exact 1-pixel brush
-    if (radius === 1) {
-        if (cx >= 0 && cx < width && cy >= 0 && cy < height) {
-            pixels.push({ x: cx, y: cy });
-        }
-        return pixels;
-    }
-    
-    const rSq = radius * radius;
-    const rInt = Math.ceil(radius);
-    
-    // Check a bounding box around the center
-    for (let y = cy - rInt; y <= cy + rInt; y++) {
-        for (let x = cx - rInt; x <= cx + rInt; x++) {
-            // Keep it inside canvas bounds
-            if (x >= 0 && x < width && y >= 0 && y < height) {
-                const dx = x - cx;
-                const dy = y - cy;
-                
-                // If distance squared is within radius squared, it's inside the circle
-                if (dx * dx + dy * dy <= rSq) {
-                    pixels.push({ x, y });
-                }
-            }
-        }
-    }
-    
-    return pixels;
-}
-

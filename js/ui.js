@@ -1,5 +1,4 @@
 import { state } from './state.js';
-import { deleteImage, reorderImage } from './images.js';
 
 export function syncUI() {
     updateStatus();
@@ -37,7 +36,9 @@ export function updateImageStateBadge(imgState) {
 }
 
 // createImageRow — builds the DOM for one entry.
-export function createImageRow(imgId, name) {
+// The controller supplies { onReorder(direction), onDelete() } so this view
+// stays decoupled from the image-lifecycle module.
+export function createImageRow(imgId, name, { onReorder, onDelete }) {
     const row = document.createElement('div');
     row.className  = 'img-row';
     row.dataset.id = imgId;
@@ -56,8 +57,8 @@ export function createImageRow(imgId, name) {
     btnDown.textContent = '▼';
     btnUp.title   = 'Move up';
     btnDown.title = 'Move down';
-    btnUp.onclick   = () => reorderImage(imgId, -1);
-    btnDown.onclick = () => reorderImage(imgId, +1);
+    btnUp.onclick   = () => onReorder(-1);
+    btnDown.onclick = () => onReorder(+1);
     reorder.appendChild(btnUp);
     reorder.appendChild(btnDown);
 
@@ -74,7 +75,7 @@ export function createImageRow(imgId, name) {
     btnDel.className   = 'img-delete';
     btnDel.textContent = '✕';
     btnDel.title       = 'Remove image';
-    btnDel.onclick     = () => deleteImage(imgId);
+    btnDel.onclick     = () => onDelete();
 
     header.appendChild(reorder);
     header.appendChild(nameEl);
