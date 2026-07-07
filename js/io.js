@@ -1,4 +1,8 @@
-import { readImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
+import { readImage, setPipelinesBaseUrl } from './vendor/itk-wasm-image-io.min.js';
+
+// itk-wasm fetches its WASM pipelines relative to this URL at runtime; point it at the
+// vendored copy instead of the jsDelivr CDN default.
+setPipelinesBaseUrl(new URL('./vendor/itk-wasm-image-io-pipelines', import.meta.url).href);
 
 
 /**
@@ -10,7 +14,10 @@ export async function loadFileIntoArray(file) {
   let data, rgba, w, h, shape;
 
   if (file.name.endsWith('.tif') || file.name.endsWith('.tiff')) {
-    const { image } = await readImage(file)
+    // webWorker: false — the bundled worker runs from a data: URL (opaque origin), which
+    // needs CORS headers to fetch the vendored pipeline WASM even same-origin. Running on
+    // the main thread avoids that requirement entirely.
+    const { image } = await readImage(file, { webWorker: false })
 
     w = image.size[0]
     h = image.size[1]

@@ -1,4 +1,8 @@
-import { writeImage } from "https://cdn.jsdelivr.net/npm/@itk-wasm/image-io@1.6.0/dist/bundle/index-worker-embedded.min.js";
+import { writeImage, setPipelinesBaseUrl } from './vendor/itk-wasm-image-io.min.js';
+
+// itk-wasm fetches its WASM pipelines relative to this URL at runtime; point it at the
+// vendored copy instead of the jsDelivr CDN default.
+setPipelinesBaseUrl(new URL('./vendor/itk-wasm-image-io-pipelines', import.meta.url).href);
 
 
 /**
@@ -54,7 +58,8 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
             };
 
             const filename = `${itkImage.name}.tif`;
-            const { serializedImage } = await writeImage(itkImage, filename);
+            // webWorker: false — see io.js for why (opaque-origin worker needs CORS).
+            const { serializedImage } = await writeImage(itkImage, filename, { webWorker: false });
 
             filesToZip.push({ name: filename, data: serializedImage.data.buffer });
         }
@@ -79,7 +84,8 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
             };
 
             const filename = `${itkImage.name}.tif`;
-            const { serializedImage } = await writeImage(itkImage, filename);
+            // webWorker: false — see io.js for why (opaque-origin worker needs CORS).
+            const { serializedImage } = await writeImage(itkImage, filename, { webWorker: false });
 
             filesToZip.push({ name: filename, data: serializedImage.data.buffer });
         }
