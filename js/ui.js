@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { deleteImage, reorderImage, onAxisChange, onSliceChange } from './images.js';
+import { deleteImage, reorderImage } from './images.js';
 
 export function syncUI() {
     updateStatus();
@@ -85,85 +85,4 @@ export function createImageRow(imgId, name) {
     row.appendChild(header);
 
     return row;
-}
-
-// Called after load completes — attaches axis / slice UI placeholders.
-export function finaliseImageRow(row, imgState) {
-    const axesEl = document.createElement('div');
-    axesEl.className    = 'img-axes';
-    axesEl.dataset.axes = imgState.id;
-
-    const sliceEl = document.createElement('div');
-    sliceEl.className     = 'img-slice';
-    sliceEl.dataset.slice = imgState.id;
-
-    updateImageStateBadge(imgState);
-
-    row.appendChild(axesEl);
-    row.appendChild(sliceEl);
-}
-
-// showAxesUI — populates and reveals axis selectors + slice sliders
-export function showAxesUI(row, imgState) {
-    const { shape, axes, nonDisplayDims, sliceIndices } = imgState;
-    const axesEl = row.querySelector('.img-axes');
-    const sliceEl = row.querySelector('.img-slice');
-    axesEl.innerHTML = '';
-    sliceEl.innerHTML = '';
-
-    const dimLabels = shape.map((size, i) => `Dim ${i} (${size})`);
-
-    function makeAxisSelect(role, currentAxisIdx) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'img-axes-row';
-        const lbl = document.createElement('label');
-        lbl.textContent = role;
-        const sel = document.createElement('select');
-        shape.forEach((size, i) => {
-            const opt = document.createElement('option');
-            opt.value = i;
-            opt.textContent = dimLabels[i];
-            if (i === currentAxisIdx) opt.selected = true;
-            sel.appendChild(opt);
-        });
-        sel.onchange = () => onAxisChange(imgState, role, parseInt(sel.value, 10));
-        wrapper.appendChild(lbl);
-        wrapper.appendChild(sel);
-        return wrapper;
-    }
-
-    axesEl.appendChild(makeAxisSelect('Y', axes.axisY));
-    axesEl.appendChild(makeAxisSelect('X', axes.axisX));
-    axesEl.classList.add('visible');
-
-    nonDisplayDims.forEach(({ i: dimIdx, size }, arrIdx) => {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'img-slice-row';
-
-        const lbl = document.createElement('label');
-        lbl.textContent = `D${dimIdx}`;
-
-        const slider = document.createElement('input');
-        slider.type  = 'range';
-        slider.min   = 0;
-        slider.max   = size - 1;
-        slider.value = sliceIndices[arrIdx];
-        slider.dataset.dimIdx = dimIdx;
-
-        const valSpan = document.createElement('span');
-        valSpan.textContent = `${sliceIndices[arrIdx]}/${size - 1}`;
-
-        slider.oninput = () => {
-            const v = parseInt(slider.value, 10);
-            imgState.sliceIndices[arrIdx] = v;
-            valSpan.textContent = `${v}/${size - 1}`;
-            onSliceChange(imgState);
-        };
-
-        wrapper.appendChild(lbl);
-        wrapper.appendChild(slider);
-        wrapper.appendChild(valSpan);
-        sliceEl.appendChild(wrapper);
-    });
-    sliceEl.classList.add('visible');
 }

@@ -129,19 +129,12 @@ input[type="checkbox"] {
 
 /* Root interactive elements now cleanly bound to the primary accent color */
 input[type="number"],
-input[type="file"],
-.img-axes-row select {
+input[type="file"] {
     background: var(--bg-control);
     border: 1px solid var(--accent-primary);
     color: var(--text-main);
     border-radius: var(--radius-sm);
     padding: 4px 6px;
-}
-
-.img-axes-row select {
-    flex: 1;
-    font-size: 11px;
-    padding: 3px 5px;
 }
 
 /* Standard Buttons */
@@ -314,46 +307,6 @@ button:disabled {
         margin-left: 100%;
         width: 0%;
     }
-}
-
-/* N-Dim Image Toggles (Slices/Axes) */
-.img-axes,
-.img-slice {
-    display: none;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg-base);
-}
-.img-axes.visible,
-.img-slice.visible {
-    display: flex;
-}
-
-.img-axes-row,
-.img-slice-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-}
-.img-axes-row label,
-.img-slice-row label {
-    color: var(--text-muted);
-    width: 14px;
-    flex-shrink: 0;
-}
-.img-slice-row label {
-    min-width: 14px;
-}
-.img-slice-row input[type="range"] {
-    flex: 1;
-}
-.img-slice-row span {
-    color: var(--text-dim);
-    min-width: 28px;
-    text-align: right;
 }
 
 #img-empty {

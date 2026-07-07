@@ -1,8 +1,8 @@
 import { state, LABEL_COLORS, MIN_LABELS_TO_TRAIN, RF_CONFIG, TRAIN_DEBOUNCE_MS } from './state.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
-import { loadFileIntoArray, buildTrainingDataset, inferAxes, pickSlice, getPixelsInRadius, intensityToRGBA } from './utils.js';
-import { createImageRow, finaliseImageRow, showAxesUI, syncUI, updateImageStateBadge } from './ui.js';
+import { loadFileIntoArray, buildTrainingDataset, getPixelsInRadius } from './utils.js';
+import { createImageRow, syncUI, updateImageStateBadge } from './ui.js';
 
 let _trainTimer = null;
 export function scheduleTrainAndPredictAll() {
@@ -80,7 +80,6 @@ export async function addImage(file) {
         return;
     }
 
-    // TODO: 20260623 -- Support 3D images
     if (loaded.shape.length > 2) {
       console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
       row.remove();
@@ -88,16 +87,7 @@ export async function addImage(file) {
       return;
     }
 
-    const { intensityArray, rgba, w, h, shape } = loaded;
-    const imgShape = shape ?? [h, w];
-
-    const axes = inferAxes(imgShape);
-    const isMultiDim = imgShape.length > 2;
-
-    const nonDisplayDims = imgShape
-        .map((size, i) => ({ i, size }))
-        .filter(({ i }) => i !== axes.axisY && i !== axes.axisX);
-    const sliceIndices = nonDisplayDims.map(() => 0);
+    const { intensityArray, rgba, w, h } = loaded;
 
     const container = document.createElement('div');
     container.className = 'image-container';
@@ -142,10 +132,6 @@ export async function addImage(file) {
         backend,
         width: w, height: h,
         intensityArray,
-        shape: imgShape,
-        axes,
-        sliceIndices,
-        nonDisplayDims,
         labels: [],
         gpuCanvas, labelCanvas, container,
         _cachedRect: null,
@@ -178,8 +164,7 @@ export async function addImage(file) {
     ro.observe(labelCanvas);
 
     row.classList.remove('loading');
-    finaliseImageRow(row, imgState);
-    if (isMultiDim) showAxesUI(row, imgState);
+    updateImageStateBadge(imgState);
 
     syncUI();
 }
@@ -259,41 +244,4 @@ export function paint(e, imgState) {
     }
 
     updateImageStateBadge(imgState);
-}
-
-export function onAxisChange(imgState, role, newAxisIdx) {
-    if (role === 'Y') imgState.axes.axisY = newAxisIdx;
-    else              imgState.axes.axisX = newAxisIdx;
-
-    imgState.nonDisplayDims = imgState.shape
-        .map((size, i) => ({ i, size }))
-        .filter(({ i }) => i !== imgState.axes.axisY && i !== imgState.axes.axisX);
-    imgState.sliceIndices = imgState.nonDisplayDims.map(() => 0);
-
-    const row = imgState._sidebarRow;
-    showAxesUI(row, imgState);
-    rerenderSlice(imgState);
-}
-
-export function onSliceChange(imgState) {
-    rerenderSlice(imgState);
-}
-
-export async function rerenderSlice(imgState) {
-    if (imgState.shape.length <= 2) return;
-
-    const slice = pickSlice(
-        imgState.intensityArray,
-        imgState.shape,
-        imgState.axes,
-        imgState.sliceIndices
-    );
-
-    const n = slice.length;
-    const rgba = new Uint8ClampedArray(n * 4);
-    intensityToRGBA(slice, rgba);
-
-    await imgState.backend.allocateImage(imgState.width, imgState.height, rgba);
-    await imgState.backend.updateFeatures(slice, state.sigma);
-    scheduleTrainAndPredictAll();
 }
