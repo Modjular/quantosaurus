@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { deleteImage, reorderImage, onAxisChange, onSliceChange } from './imageManager.js';
+import { deleteImage, reorderImage, onAxisChange, onSliceChange } from './images.js';
 
 export function syncUI() {
     updateStatus();

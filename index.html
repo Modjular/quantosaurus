@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Quanto</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎨</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%22100%22>🖐</text></svg>">
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="mode-grab">
 
 <div id="top-bar">
-    <h2 style="margin:0; font-size:18px; font-weight:300; color:#007acc;">
+    <h2 style="margin:0; font-size:18px; font-weight:300; color:#287b60;">
       Quanto
     </h2>
     <div id="status">No images loaded. Drag &amp; drop onto the canvas.</div>
@@ -102,7 +102,7 @@
 <script type="module">
     import { state, LABEL_COLORS } from './js/state.js';
     import { setupCamera } from './js/camera.js';
-    import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './js/imageManager.js';
+    import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './js/images.js';
     import { syncUI } from './js/ui.js';
     import { zipImages } from './js/utils.js';
 
