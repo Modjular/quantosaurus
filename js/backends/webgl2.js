@@ -14,6 +14,10 @@ export class WebGl2Backend {
       this.probFbo = null;
       this.probTexture = null;
 
+      // CPU-side CCL results (see computeConnectedComponents/computeStats)
+      this.labels = null;
+      this.denseStats = null;
+
       this.labelColors = labelColors || [
           'rgba(255,0,0,1.0)',
           'rgba(0,255,0,1.0)',
@@ -43,6 +47,14 @@ export class WebGl2Backend {
       this.width = width;
       this.height = height;
       const gl = this.gl;
+
+      // Free previous per-image resources: allocateImage is called repeatedly
+      // (once per slice), so recreating without deleting leaks GPU memory.
+      [this.originalTexture, this.horizTexture, this.featTexture0,
+       this.featTexture1, this.probTexture].forEach(t => { if (t) gl.deleteTexture(t); });
+      [this.horizFbo, this.featFbo, this.probFbo].forEach(f => { if (f) gl.deleteFramebuffer(f); });
+      this.labels = null;
+      this.denseStats = null;
 
       this.originalTexture = this._createTexture(width, height, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, rgbaData);
       
@@ -187,14 +199,32 @@ export class WebGl2Backend {
   async runInference(rf) {
       const gl = this.gl;
 
-      // Pack Int32 struct into Float32 Texture (floats perfectly represent ints up to 16.7M)
+      const numTrees = rf.treeRoots.length;
+      if (numTrees > 8) {
+          throw new Error(
+              `runInference: ${numTrees} trees provided, but only up to 8 are supported ` +
+              `by the u_treeRoots uniform layout. Reduce the forest size or widen u_treeRoots.`
+          );
+      }
+
+      // Pack the forest into a Float32 texture (floats represent ints exactly up
+      // to 16.7M). forestBuffer bytes are mixed-type per node slot: feat_idx,
+      // left and right are raw i32 bits while threshold is f32 (see rf.js), so
+      // each field must be converted by its actual type — reading the i32 fields
+      // through the Float32Array view yields denormal garbage that truncates to 0.
       const forestNodes = rf.forestBuffer.byteLength / 16;
       const texWidth = Math.ceil(Math.sqrt(forestNodes));
       const texHeight = Math.ceil(forestNodes / texWidth);
-      
-      const paddedForest = new Int32Array(texWidth * texHeight * 4);
-      paddedForest.set(new Int32Array(rf.forestBuffer));
-      const floatForest = new Float32Array(paddedForest); // Cast bits to float
+
+      const i32Forest = new Int32Array(rf.forestBuffer.buffer, rf.forestBuffer.byteOffset, rf.forestBuffer.length);
+      const floatForest = new Float32Array(texWidth * texHeight * 4);
+      for (let node = 0; node < forestNodes; node++) {
+          const o = node * 4;
+          floatForest[o + 0] = i32Forest[o + 0];      // feat_idx
+          floatForest[o + 1] = rf.forestBuffer[o + 1]; // threshold
+          floatForest[o + 2] = i32Forest[o + 2];      // left
+          floatForest[o + 3] = i32Forest[o + 3];      // right
+      }
 
       const forestTex = this._createTexture(texWidth, texHeight, gl.RGBA32F, gl.RGBA, gl.FLOAT, floatForest);
 
@@ -212,9 +242,15 @@ export class WebGl2Backend {
       gl.uniform1i(gl.getUniformLocation(this.progRF, "u_forest"), 2);
       gl.uniform1i(gl.getUniformLocation(this.progRF, "u_forestWidth"), texWidth);
 
-      const paddedRoots = new Int32Array(8);
+      // Unused root slots must be -1: 0 is a valid node index, not an "empty slot"
+      // sentinel, so zero-filled slots would silently re-run tree 0's traversal and
+      // add phantom votes (same fix as WebGpuBackend.runInference).
+      const paddedRoots = new Int32Array(8).fill(-1);
       paddedRoots.set(rf.treeRoots);
       gl.uniform1iv(gl.getUniformLocation(this.progRF, "u_treeRoots"), paddedRoots);
+      gl.uniform1i(gl.getUniformLocation(this.progRF, "u_numTrees"), numTrees);
+      // Real traversal bound instead of a hardcoded depth that truncated deep trees.
+      gl.uniform1i(gl.getUniformLocation(this.progRF, "u_maxDepth"), rf.maxDepth ?? 24);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -256,6 +292,71 @@ export class WebGl2Backend {
           }
       }
       return out;
+  }
+
+  /**
+   * Connected Component Labeling over the live probability map.
+   *
+   * WebGL2 has no compute shaders or atomics, so the WebGPU backend's GPU
+   * union-find can't be ported directly, and an iterative ping-pong label
+   * propagation shader would need O(component diameter) passes (failing on
+   * spirals/long cells with any fixed pass count). Since this backend is the
+   * fallback path, run the union-find on the CPU instead — same output
+   * contract as WebGpuBackend: 4-connectivity, background = 0, and each
+   * component labeled with its minimum pixel index + 1.
+   */
+  async computeConnectedComponents(targetClassIdx, threshold = 0.5) {
+      const gl = this.gl;
+      const n = this.width * this.height;
+
+      // Probabilities live in the RGBA channels of probTexture (max 4 classes)
+      const pixels = new Float32Array(n * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.probFbo);
+      gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, pixels);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      const mask = new Uint8Array(n);
+      for (let i = 0; i < n; i++) {
+          if (pixels[i * 4 + targetClassIdx] >= threshold) mask[i] = 1;
+      }
+
+      this.labels = cclLabel(mask, this.width, this.height);
+      return this.labels;
+  }
+
+  /**
+   * Compiles area and cumulative intensity metric profiles per label ID.
+   * Produces the same dense 7-field structs as WebGpuBackend.computeStats.
+   */
+  async computeStats() {
+      if (!this.labels) return null;
+      const gl = this.gl;
+      const n = this.width * this.height;
+
+      // Read the original image back for the red-channel intensity
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.originalTexture, 0);
+      const rgba = new Uint8Array(n * 4);
+      gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fbo);
+
+      const intensity = new Uint32Array(n);
+      for (let i = 0; i < n; i++) {
+          // Same fixed-point scaling as u32(color.r * 10000.0) in the WebGPU stats shader
+          intensity[i] = Math.floor((rgba[i * 4] / 255) * 10000);
+      }
+
+      this.denseStats = accumulateStats(this.labels, intensity, this.width, this.height);
+  }
+
+  async downloadStats() {
+      return this.denseStats ?? new Uint32Array(0);
+  }
+
+  async downloadLabels() {
+      return this.labels ? this.labels.slice() : new Uint32Array(this.width * this.height);
   }
 
   // --- WebGL2 Helpers ---
@@ -333,18 +434,132 @@ export class WebGl2Backend {
       const numColors = this.labelColors.length;
       this.progRF = createProgram(FS_RF_INFERENCE.replace(/{{NUM_COLORS}}/g, numColors));
 
-      const parseColor = (c) => {
-          let m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),?\s*([\d.]+)?\)/);
-          if (m) return `vec4(${m[1]/255}, ${m[2]/255}, ${m[3]/255}, ${m[4] || '0.8'})`;
-          m = c.match(/^#([0-9a-f]{6})$/i)[1];
-          if (m) return `vec4(${parseInt(m.substr(0,2),16)/255}, ${parseInt(m.substr(2,2),16)/255}, ${parseInt(m.substr(4,2),16)/255}, 0.8)`;
-          return "vec4(1.0, 0.0, 0.0, 1.0)";
-      };
-      const colorsGLSL = this.labelColors.map(parseColor).join(',\n    ');
+      const colorsGLSL = this.labelColors.map(parseColorToGLSL).join(',\n    ');
       this.progComposite = createProgram(FS_COMPOSITE
           .replace(/{{NUM_COLORS}}/g, numColors)
           .replace(/{{COLORS_ARRAY}}/g, colorsGLSL));
   }
+}
+
+/**
+ * Converts any valid CSS color string (hex3/6/8, rgb/rgba, hsl/hsla, named
+ * colors, etc.) into a GLSL vec4 literal, by letting the browser's own CSS
+ * color parser do the work via a 1x1 canvas instead of hand-rolled regex.
+ * Mirrors parseColorToWGSL in webgpu.js.
+ */
+let _colorParseCtx = null;
+function parseColorToGLSL(colorStr) {
+    if (!_colorParseCtx) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        _colorParseCtx = canvas.getContext('2d', { willReadFrequently: true });
+    }
+    const ctx = _colorParseCtx;
+    ctx.fillStyle = '#ff0000'; // fallback color if the string below fails to parse
+    ctx.fillStyle = colorStr;  // no-op (silently ignored) if colorStr isn't valid CSS
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    return `vec4(${(r / 255).toFixed(3)}, ${(g / 255).toFixed(3)}, ${(b / 255).toFixed(3)}, ${(a / 255).toFixed(3)})`;
+}
+
+/**
+ * CPU union-find CCL over a binary mask. 4-connectivity; background pixels get
+ * label 0; every component is labeled with its minimum pixel index + 1,
+ * matching the labeling semantics of the WebGPU backend's CCL_SHADER.
+ * Exported for testing outside the browser.
+ */
+export function cclLabel(mask, width, height) {
+    const n = width * height;
+    const parent = new Int32Array(n).fill(-1); // -1 = background, else parent pixel index
+    for (let i = 0; i < n; i++) {
+        if (mask[i]) parent[i] = i;
+    }
+
+    function find(i) {
+        let root = i;
+        while (parent[root] !== root) root = parent[root];
+        while (parent[i] !== root) { // path compression
+            const next = parent[i];
+            parent[i] = root;
+            i = next;
+        }
+        return root;
+    }
+
+    // Union by minimum index, so a component's final root is its minimum pixel index
+    function union(a, b) {
+        const ra = find(a);
+        const rb = find(b);
+        if (ra === rb) return;
+        if (ra < rb) parent[rb] = ra;
+        else parent[ra] = rb;
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            if (parent[i] < 0) continue;
+            if (x + 1 < width && parent[i + 1] >= 0) union(i, i + 1);
+            if (y + 1 < height && parent[i + width] >= 0) union(i, i + width);
+        }
+    }
+
+    const labels = new Uint32Array(n); // background stays 0
+    for (let i = 0; i < n; i++) {
+        if (parent[i] >= 0) labels[i] = find(i) + 1;
+    }
+    return labels;
+}
+
+/**
+ * Accumulates per-label metrics into the same dense 7-field u32 structs as
+ * WebGpuBackend.downloadStats: label, area, total_intensity, sum_x, sum_y,
+ * min_intensity, max_intensity. Exported for testing outside the browser.
+ */
+export function accumulateStats(labels, intensity, width, height) {
+    const structCount = 7;
+    const rowIndex = new Map(); // label -> index into rows
+    const rows = [];
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            const label = labels[i];
+            if (label === 0) continue;
+
+            let s = rowIndex.get(label);
+            if (s === undefined) {
+                s = rows.length;
+                rowIndex.set(label, s);
+                rows.push({ label, area: 0, total: 0, sumX: 0, sumY: 0, min: 0xFFFFFFFF, max: 0 });
+            }
+
+            const r = rows[s];
+            const v = intensity[i];
+            r.area++;
+            r.total += v;
+            r.sumX += x;
+            r.sumY += y;
+            if (v < r.min) r.min = v;
+            if (v > r.max) r.max = v;
+        }
+    }
+
+    const out = new Uint32Array(rows.length * structCount);
+    for (let s = 0; s < rows.length; s++) {
+        const r = rows[s];
+        const o = s * structCount;
+        out[o] = r.label;
+        out[o + 1] = r.area;
+        out[o + 2] = r.total;
+        out[o + 3] = r.sumX;
+        out[o + 4] = r.sumY;
+        out[o + 5] = r.min;
+        out[o + 6] = r.max;
+    }
+    return out;
 }
 
 // Keep the exact same gaussian_kernel JS function here.
@@ -487,9 +702,11 @@ in vec2 v_uv;
 
 uniform sampler2D u_feat0;
 uniform sampler2D u_feat1;
-uniform sampler2D u_forest; 
+uniform sampler2D u_forest;
 uniform int u_forestWidth;
-uniform int u_treeRoots[8];
+uniform int u_treeRoots[8]; // unused slots are -1
+uniform int u_numTrees;
+uniform int u_maxDepth;
 
 out vec4 out_probs;
 
@@ -512,16 +729,18 @@ float getFeat(int f_idx) {
 }
 
 void main() {
-  float votes[{{NUM_COLORS}}];
-  for(int i=0; i<{{NUM_COLORS}}; i++) votes[i] = 0.0;
+  // Fixed size 4 (RGBA channel cap on labels elsewhere in this backend), not
+  // {{NUM_COLORS}}: GLSL ES 3.00 rejects a constant out-of-bounds array index
+  // even inside a branch guarded by "if ({{NUM_COLORS}} > 3)" below, so a
+  // votes[{{NUM_COLORS}}] array failed to compile whenever NUM_COLORS <= 3.
+  float votes[4];
+  for(int i=0; i<4; i++) votes[i] = 0.0;
   
-  float num_trees = 8.0;
-
-  for (int t = 0; t < 8; t++) {
+  for (int t = 0; t < u_numTrees; t++) {
       int node_idx = u_treeRoots[t];
       if (node_idx < 0) continue;
 
-      for (int depth = 0; depth < 10; depth++) {
+      for (int depth = 0; depth < u_maxDepth; depth++) {
           vec4 node = getNode(node_idx);
           int feat_idx = int(node.x);
           float threshold = node.y;
@@ -545,11 +764,12 @@ void main() {
       }
   }
 
+  float denom = max(float(u_numTrees), 1.0);
   vec4 final_probs = vec4(0.0);
-  if ({{NUM_COLORS}} > 0) final_probs.r = votes[0] / num_trees;
-  if ({{NUM_COLORS}} > 1) final_probs.g = votes[1] / num_trees;
-  if ({{NUM_COLORS}} > 2) final_probs.b = votes[2] / num_trees;
-  if ({{NUM_COLORS}} > 3) final_probs.a = votes[3] / num_trees;
+  if ({{NUM_COLORS}} > 0) final_probs.r = votes[0] / denom;
+  if ({{NUM_COLORS}} > 1) final_probs.g = votes[1] / denom;
+  if ({{NUM_COLORS}} > 2) final_probs.b = votes[2] / denom;
+  if ({{NUM_COLORS}} > 3) final_probs.a = votes[3] / denom;
   
   out_probs = final_probs;
 }`;
