@@ -1,6 +1,6 @@
-import { state, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX, CAMERA_ZOOM_SENSITIVITY } from './state.js';
+import { CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX, CAMERA_ZOOM_SENSITIVITY } from './config.js';
 
-export function setupCamera(viewport, board) {
+export function setupCamera(state, viewport, board) {
     function updateBoard() {
         board.style.transform =
             `translate(${state.camera.x}px, ${state.camera.y}px) ` +

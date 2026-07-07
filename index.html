@@ -100,7 +100,8 @@
 
 </div>
 <script type="module">
-    import { state, LABEL_COLORS } from './js/state.js';
+    import { state } from './js/state.js';
+    import { LABEL_COLORS } from './js/config.js'
     import { scheduleTraining } from './js/training.js'
     import { setupCamera } from './js/camera.js';
     import { addFiles } from './js/images.js';
@@ -109,7 +110,7 @@
     function init() {
         const viewport = document.getElementById('viewport');
         const board    = document.getElementById('canvas-board');
-        setupCamera(viewport, board);
+        setupCamera(state, viewport, board);
         setupUI();
     }
 

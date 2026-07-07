@@ -1,4 +1,4 @@
-import { LABEL_COLORS, RF_CONFIG } from './state.js';
+import { LABEL_COLORS, RF_CONFIG } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
@@ -63,14 +63,14 @@ export async function addImage(state, file) {
         console.error(err);
         alert(`Failed to load ${file.name}: ${err.message}`);
         row.remove();
-        syncUI();
+        syncUI(state);
         return;
     }
 
     if (loaded.shape.length > 2) {
       console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
       row.remove();
-      syncUI();
+      syncUI(state);
       return;
     }
 
@@ -106,7 +106,7 @@ export async function addImage(state, file) {
         console.error(err);
         container.remove();
         row.remove();
-        syncUI();
+        syncUI(state);
         return;
     }
     await backend.allocateImage(w, h, rgba);
@@ -153,7 +153,7 @@ export async function addImage(state, file) {
     row.classList.remove('loading');
     updateImageStateBadge(imgState);
 
-    syncUI();
+    syncUI(state);
 }
 
 export function reorderImage(state, imgId, direction) {
@@ -202,7 +202,7 @@ export function deleteImage(state, imgId) {
 
     if (labelCount > 0) scheduleTraining(state);
 
-    syncUI();
+    syncUI(state);
 }
 
 /**

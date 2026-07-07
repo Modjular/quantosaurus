@@ -1,26 +1,24 @@
-import { state } from './state.js';
-
-export function syncUI() {
-    updateStatus();
-    updateExportButtonCount();
-    refreshEmptyState();
+export function syncUI(state) {
+    updateStatus(state);
+    updateExportButtonCount(state);
+    refreshEmptyState(state);
 }
 
-export function updateStatus() {
+export function updateStatus(state) {
     const n = state.images.length;
     document.getElementById('status').innerText =
         n === 0 ? 'No images loaded. Drag & drop onto the canvas.'
                 : `${n} image${n !== 1 ? 's' : ''} loaded.`;
 }
 
-export function updateExportButtonCount() {
+export function updateExportButtonCount(state) {
     const btn = document.getElementById('btnExportAll');
     const n   = state.images.length;
     btn.disabled  = n === 0;
     btn.innerText = n > 0 ? `Export Loaded Images (${n})` : 'Export Loaded Images';
 }
 
-export function refreshEmptyState() {
+export function refreshEmptyState(state) {
     document.getElementById('img-empty').style.display =
         state.images.length === 0 ? '' : 'none';
 }

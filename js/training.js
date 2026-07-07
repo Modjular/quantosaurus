@@ -1,4 +1,4 @@
-import { MIN_LABELS_TO_TRAIN, RF_CONFIG, TRAIN_DEBOUNCE_MS } from './state.js';
+import { MIN_LABELS_TO_TRAIN, RF_CONFIG, TRAIN_DEBOUNCE_MS } from './config.js';
 
 /**
  * Aggregates features and labels across all images into 1D typed arrays for Random Forest training.
