@@ -101,8 +101,9 @@
 </div>
 <script type="module">
     import { state, LABEL_COLORS } from './js/state.js';
+    import { scheduleTraining } from './js/training.js'
     import { setupCamera } from './js/camera.js';
-    import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './js/images.js';
+    import { handleFiles } from './js/images.js';
     import { zipImages } from './js/export.js';
 
     function init() {
@@ -134,7 +135,7 @@
             for (const img of state.images) {
                 await img.backend.updateFeatures(img.intensityArray, state.sigma);
             }
-            scheduleTrainAndPredictAll();
+            scheduleTraining(state);
         };
 
         // Brush Size
@@ -191,9 +192,6 @@
             btnExport.disabled = true;
             btnExport.innerText = 'Training…';
             try {
-                // Train then run inference to ensure textures/buffers are updated before zipping
-                await trainAndPredictAll();
-
                 btnExport.innerText = 'Exporting…';
                 const zipBlob = await zipImages(
                     state.images,
