@@ -100,11 +100,11 @@
 
 </div>
 <script type="module">
-    import { state, LABEL_COLORS } from './state.js';
-    import { setupCamera } from './camera.js';
-    import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './imageManager.js';
-    import { syncUI } from './ui.js';
-    import { zipImages } from './utils.js';
+    import { state, LABEL_COLORS } from './js/state.js';
+    import { setupCamera } from './js/camera.js';
+    import { handleFiles, trainAndPredictAll, scheduleTrainAndPredictAll } from './js/imageManager.js';
+    import { syncUI } from './js/ui.js';
+    import { zipImages } from './js/utils.js';
 
     function init() {
         const viewport = document.getElementById('viewport');
