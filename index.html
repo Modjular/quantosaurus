@@ -101,15 +101,17 @@
 </div>
 <script type="module">
     import { state } from './js/state.js';
-    import { LABEL_COLORS } from './js/config.js'
-    import { scheduleTraining } from './js/training.js'
-    import { setupCamera } from './js/camera.js';
+    import { LABEL_COLORS, RF_CONFIG } from './js/config.js'
     import { addFiles } from './js/images.js';
     import { zipImages } from './js/export.js';
+    import { setupCamera } from './js/camera.js';
+    import { FlatRandomForest } from './js/rf.js';
+    import { scheduleTraining } from './js/training.js'
 
     function init() {
         const viewport = document.getElementById('viewport');
         const board    = document.getElementById('canvas-board');
+        state.rf = new FlatRandomForest(RF_CONFIG)
         setupCamera(state, viewport, board);
         setupUI();
     }

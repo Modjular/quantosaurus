@@ -1,11 +1,9 @@
-import { FlatRandomForest } from './rf.js';
-
 export const state = {
     // Images — ordered array; visual order == export order
     images: [],
 
     // ML
-    rf: new FlatRandomForest(RF_CONFIG),
+    rf: null,
 
     // Drawing / Tools
     currentClass: 0,
