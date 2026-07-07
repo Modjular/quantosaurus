@@ -1,8 +1,47 @@
 import { state, LABEL_COLORS, MIN_LABELS_TO_TRAIN, RF_CONFIG, TRAIN_DEBOUNCE_MS } from './state.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
-import { loadFileIntoArray, buildTrainingDataset, inferAxes, pickSlice, getPixelsInRadius, intensityToRGBA } from './utils.js';
-import { createImageRow, finaliseImageRow, showAxesUI, syncUI, updateImageStateBadge } from './ui.js';
+import { loadFileIntoArray } from './io.js';
+import { createImageRow, syncUI, updateImageStateBadge } from './ui.js';
+
+/**
+ * Aggregates features and labels across all images into 1D typed arrays for Random Forest training.
+ * @param {Array<Object>} images - Array of image objects containing labels and a backend to gather features.
+ * @param {number} totalLabels - The total number of labels across all images.
+ * @returns {Promise<{combinedX: Float32Array, yArray: Int32Array}>} An object containing the concatenated features (combinedX) and their corresponding labels (yArray).
+ */
+async function buildTrainingDataset(images, totalLabels) {
+    const allX = [];
+    const yArray = new Int32Array(totalLabels);
+    let currentLabelOffset = 0;
+
+    for (const img of images) {
+        const numLabels = img.labels.length;
+        if (numLabels === 0) continue;
+
+        const indicesArray = new Uint32Array(numLabels);
+        for (let i = 0; i < numLabels; i++) {
+            const l = img.labels[i];
+            indicesArray[i] = l.y * img.width + l.x;
+            yArray[currentLabelOffset + i] = l.cls;
+        }
+
+        const X_img = await img.backend.gatherFeaturesForTraining(indicesArray);
+        allX.push(X_img);
+        currentLabelOffset += numLabels;
+    }
+
+    const totalFeatureLength = allX.reduce((sum, arr) => sum + arr.length, 0);
+    const combinedX = new Float32Array(totalFeatureLength);
+    let xOffset = 0;
+
+    for (const arr of allX) {
+        combinedX.set(arr, xOffset);
+        xOffset += arr.length;
+    }
+
+    return { combinedX, yArray };
+}
 
 let _trainTimer = null;
 export function scheduleTrainAndPredictAll() {
@@ -64,7 +103,10 @@ async function initializeBackend(canvas, labelColors) {
 
 export async function addImage(file) {
     const imgId = crypto.randomUUID();
-    const row   = createImageRow(imgId, file.name);
+    const row   = createImageRow(imgId, file.name, {
+        onReorder: (dir) => reorderImage(imgId, dir),
+        onDelete:  ()    => deleteImage(imgId),
+    });
     row.classList.add('loading');
     document.getElementById('img-empty').style.display = 'none';
     document.getElementById('image-list').appendChild(row);
@@ -80,7 +122,6 @@ export async function addImage(file) {
         return;
     }
 
-    // TODO: 20260623 -- Support 3D images
     if (loaded.shape.length > 2) {
       console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
       row.remove();
@@ -88,16 +129,7 @@ export async function addImage(file) {
       return;
     }
 
-    const { intensityArray, rgba, w, h, shape } = loaded;
-    const imgShape = shape ?? [h, w];
-
-    const axes = inferAxes(imgShape);
-    const isMultiDim = imgShape.length > 2;
-
-    const nonDisplayDims = imgShape
-        .map((size, i) => ({ i, size }))
-        .filter(({ i }) => i !== axes.axisY && i !== axes.axisX);
-    const sliceIndices = nonDisplayDims.map(() => 0);
+    const { intensityArray, rgba, w, h } = loaded;
 
     const container = document.createElement('div');
     container.className = 'image-container';
@@ -142,10 +174,6 @@ export async function addImage(file) {
         backend,
         width: w, height: h,
         intensityArray,
-        shape: imgShape,
-        axes,
-        sliceIndices,
-        nonDisplayDims,
         labels: [],
         gpuCanvas, labelCanvas, container,
         _cachedRect: null,
@@ -178,8 +206,7 @@ export async function addImage(file) {
     ro.observe(labelCanvas);
 
     row.classList.remove('loading');
-    finaliseImageRow(row, imgState);
-    if (isMultiDim) showAxesUI(row, imgState);
+    updateImageStateBadge(imgState);
 
     syncUI();
 }
@@ -233,6 +260,48 @@ export function deleteImage(imgId) {
     syncUI();
 }
 
+/**
+ * Returns an array of pixel coordinates that fall within a given radius of a center point.
+ * @param {number} cx - The x-coordinate of the center.
+ * @param {number} cy - The y-coordinate of the center.
+ * @param {number} radius - The radius of the circle.
+ * @param {number} width - The width of the bounding canvas/image.
+ * @param {number} height - The height of the bounding canvas/image.
+ * @returns {Array<{x: number, y: number}>} Array of point objects containing the coordinates within the radius.
+ */
+function getPixelsInRadius(cx, cy, radius, width, height) {
+    const pixels = [];
+
+    // Exact 1-pixel brush
+    if (radius === 1) {
+        if (cx >= 0 && cx < width && cy >= 0 && cy < height) {
+            pixels.push({ x: cx, y: cy });
+        }
+        return pixels;
+    }
+
+    const rSq = radius * radius;
+    const rInt = Math.ceil(radius);
+
+    // Check a bounding box around the center
+    for (let y = cy - rInt; y <= cy + rInt; y++) {
+        for (let x = cx - rInt; x <= cx + rInt; x++) {
+            // Keep it inside canvas bounds
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                const dx = x - cx;
+                const dy = y - cy;
+
+                // If distance squared is within radius squared, it's inside the circle
+                if (dx * dx + dy * dy <= rSq) {
+                    pixels.push({ x, y });
+                }
+            }
+        }
+    }
+
+    return pixels;
+}
+
 export function paint(e, imgState) {
     const rect   = imgState._cachedRect || imgState.labelCanvas.getBoundingClientRect();
     const scaleX = imgState.width  / rect.width;
@@ -259,41 +328,4 @@ export function paint(e, imgState) {
     }
 
     updateImageStateBadge(imgState);
-}
-
-export function onAxisChange(imgState, role, newAxisIdx) {
-    if (role === 'Y') imgState.axes.axisY = newAxisIdx;
-    else              imgState.axes.axisX = newAxisIdx;
-
-    imgState.nonDisplayDims = imgState.shape
-        .map((size, i) => ({ i, size }))
-        .filter(({ i }) => i !== imgState.axes.axisY && i !== imgState.axes.axisX);
-    imgState.sliceIndices = imgState.nonDisplayDims.map(() => 0);
-
-    const row = imgState._sidebarRow;
-    showAxesUI(row, imgState);
-    rerenderSlice(imgState);
-}
-
-export function onSliceChange(imgState) {
-    rerenderSlice(imgState);
-}
-
-export async function rerenderSlice(imgState) {
-    if (imgState.shape.length <= 2) return;
-
-    const slice = pickSlice(
-        imgState.intensityArray,
-        imgState.shape,
-        imgState.axes,
-        imgState.sliceIndices
-    );
-
-    const n = slice.length;
-    const rgba = new Uint8ClampedArray(n * 4);
-    intensityToRGBA(slice, rgba);
-
-    await imgState.backend.allocateImage(imgState.width, imgState.height, rgba);
-    await imgState.backend.updateFeatures(slice, state.sigma);
-    scheduleTrainAndPredictAll();
 }
