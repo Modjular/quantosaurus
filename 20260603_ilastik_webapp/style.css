@@ -390,6 +390,16 @@ button:disabled {
     border-radius: var(--radius-sm);
     flex-shrink: 0;
 }
+.class-stat-badge {
+    font-size: 11px;
+    color: #888;
+    background: rgba(0,0,0,0.05);
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-family: monospace;
+    min-width: 14px;
+    text-align: center;
+}
 
 /* ── Composite Structural Panels ──────────────────────────────────── */
 .heavy-panel {

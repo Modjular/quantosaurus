@@ -67,18 +67,6 @@
                     <span id="sigmaVal" style="min-width:30px; font-size:12px;">1.0</span>
                 </div>
             </div>
-
-            <div class="heavy-panel">
-                <div class="heavy-panel-header">
-                  <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
-                      <input type="checkbox" id="btnTrain" disabled>
-                      Real-Time Prediction
-                  </label>
-                </div>
-                <p class="heavy-panel-desc">
-                    Real-time predictions enable instant feedback but is compute intense. Performance may degrade with larger image stacks.
-                </p>
-            </div>
         </div>
 
         <div class="sidebar-section" id="section-export">
@@ -147,7 +135,7 @@
             for (const img of state.images) {
                 await img.backend.updateFeatures(img.intensityArray, state.sigma);
             }
-            if (state.liveUpdate) scheduleTrainAndPredictAll();
+            scheduleTrainAndPredictAll();
         };
 
         // Brush Size
@@ -170,14 +158,18 @@
         });
 
         // TODO: Use state.rf.numColors as source of truth instead
+        // Setup class selector with stat badges
         document.querySelector('.class-selector').innerHTML = LABEL_COLORS.map((color, index) => `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
-                <div class="color-box" style="background:${color};"></div>
-                <span contenteditable>Class ${index + 1}</span>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <div class="color-box" style="background:${color};"></div>
+                    <span contenteditable>Class ${index + 1}</span>
+                </div>
+                <div class="class-stat-badge" id="stat-class-${index}">0</div>
             </div>
         `).join('');
 
-        // Class selector
+        // Class selector interaction
         document.querySelectorAll('.class-item').forEach(el => {
             el.onclick = () => {
                 document.querySelectorAll('.class-item').forEach(i => i.classList.remove('active'));
@@ -185,13 +177,6 @@
                 state.currentClass = parseInt(el.dataset.class, 10);
             };
         });
-
-        // Live update
-        const btnTrain = document.getElementById('btnTrain');
-        btnTrain.onchange = (e) => {
-            state.liveUpdate = e.target.checked;
-            if (state.liveUpdate) scheduleTrainAndPredictAll();
-        };
 
         // Export
         const btnExport = document.getElementById('btnExportAll');
@@ -237,6 +222,30 @@
             }
         };
     }
+
+    // --- NEW: Global hook to update stats ---
+    // Call this from imageManager.js after scheduleTrainAndPredictAll finishes its work
+    window.refreshClassStats = async (activeImage) => {
+        if (!activeImage || !activeImage.backend || typeof activeImage.backend.computeStats !== 'function') return;
+        
+        try {
+            const stats = await activeImage.backend.computeStats();
+            
+            // NOTE: You might need to adjust `classData.count` depending on 
+            // the exact data structure returned by your computeStats() method!
+            LABEL_COLORS.forEach((_, index) => {
+                const badge = document.getElementById(`stat-class-${index}`);
+                if (badge) {
+                    const classData = stats[index] || {};
+                    const count = classData.count || 0; // <-- adjust property key here
+                    badge.innerText = count > 0 ? count : '0';
+                    badge.style.opacity = count > 0 ? '1' : '0.3';
+                }
+            });
+        } catch (err) {
+            console.error("Failed to refresh stats:", err);
+        }
+    };
 
     init();
 

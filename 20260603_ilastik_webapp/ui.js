@@ -3,7 +3,6 @@ import { deleteImage, reorderImage, onAxisChange, onSliceChange } from './imageM
 
 export function syncUI() {
     updateStatus();
-    updateTrainButton();
     updateExportButtonCount();
     refreshEmptyState();
 }
@@ -13,10 +12,6 @@ export function updateStatus() {
     document.getElementById('status').innerText =
         n === 0 ? 'No images loaded. Drag & drop onto the canvas.'
                 : `${n} image${n !== 1 ? 's' : ''} loaded.`;
-}
-
-export function updateTrainButton() {
-    document.getElementById('btnTrain').disabled = state.images.length === 0;
 }
 
 export function updateExportButtonCount() {

@@ -114,7 +114,7 @@ export async function addImage(file) {
 
     const tileLabel = document.createElement('div');
     tileLabel.className   = 'image-tile-label';
-    tileLabel.textContent = file.name;
+    tileLabel.textContent = `${file.name} ${w}x${h}`;
 
     container.appendChild(gpuCanvas);
     container.appendChild(labelCanvas);

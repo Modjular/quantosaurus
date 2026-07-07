@@ -31,7 +31,7 @@ export const state = {
     sigma: 1.0,
 
     // Live update
-    liveUpdate: false,
+    liveUpdate: true,
 
     // Camera
     camera: { x: 0, y: 0, scale: 1 },
