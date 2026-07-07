@@ -30,9 +30,6 @@ export const state = {
     // Features
     sigma: 1.0,
 
-    // Live update
-    liveUpdate: true,
-
     // Camera
     camera: { x: 0, y: 0, scale: 1 },
     isSpaceDown: false,

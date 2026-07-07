@@ -664,6 +664,15 @@ export class WebGpuBackend {
         const outSize = this.width * this.height * numColors;
         return this._readBuffer(this.probBuffer, outSize * 4, Float32Array);
     }
+
+    destroy() {
+        if (this.originalTexture)    { this.originalTexture.destroy();    this.originalTexture = null; }
+        if (this.featureBuffer)      { this.featureBuffer.destroy();      this.featureBuffer = null; }
+        if (this.probBuffer)         { this.probBuffer.destroy();         this.probBuffer = null; }
+        if (this.labelBuffer)        { this.labelBuffer.destroy();        this.labelBuffer = null; }
+        if (this.statsBuffer)        { this.statsBuffer.destroy();        this.statsBuffer = null; }
+        if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
+    }
 }
 
 

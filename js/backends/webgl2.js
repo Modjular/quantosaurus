@@ -303,6 +303,16 @@ export class WebGl2Backend {
       return fbo;
   }
 
+  destroy() {
+      const gl = this.gl;
+      if (!gl) return;
+      [this.originalTexture, this.horizTexture, this.featTexture0,
+       this.featTexture1, this.probTexture].forEach(t => { if (t) gl.deleteTexture(t); });
+      [this.horizFbo, this.featFbo, this.probFbo].forEach(f => { if (f) gl.deleteFramebuffer(f); });
+      [this.progHoriz, this.progVert, this.progRF, this.progComposite].forEach(p => { if (p) gl.deleteProgram(p); });
+      if (this.quadVao) gl.deleteVertexArray(this.quadVao);
+  }
+
   _compileShaders() {
       const gl = this.gl;
       const createProgram = (fsSource) => {

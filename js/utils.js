@@ -193,7 +193,7 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
             filesToZip.push({ name: filename, data: serializedImage.data.buffer });
         }
 
-        const exportLabels = true;
+        const exportLabels = false; // TODO: re-enable once itk-wasm label export bug is fixed
         if (exportLabels) {
             // Before export, make sure labels are fully connected, then run stats
 
@@ -281,7 +281,7 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
          */
         return new Promise((resolve, reject) => {
             const workerCode = `
-                importScripts('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+                importScripts(new URL('/js/vendor/jszip.min.js', self.location.origin).href);
                 
                 self.onmessage = async function(e) {
                     const files = e.data;

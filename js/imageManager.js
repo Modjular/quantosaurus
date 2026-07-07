@@ -82,7 +82,7 @@ export async function addImage(file) {
 
     // TODO: 20260623 -- Support 3D images
     if (loaded.shape.length > 2) {
-      console.warn(`Only 2D images are currently supported. ${file.name} is (${shape})`);
+      console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
       row.remove();
       syncUI();
       return;
@@ -170,7 +170,7 @@ export async function addImage(file) {
         if (state.activeImageId === imgId) {
             state.isDrawing    = false;
             state.activeImageId = null;
-            if (state.liveUpdate) scheduleTrainAndPredictAll();
+            scheduleTrainAndPredictAll();
         }
     });
 
@@ -223,11 +223,12 @@ export function deleteImage(imgId) {
         if (!ok) return;
     }
 
+    imgState.backend.destroy();
     imgState.container.remove();
     imgState._sidebarRow.remove();
     state.images.splice(idx, 1);
 
-    if (labelCount > 0 && state.liveUpdate) scheduleTrainAndPredictAll();
+    if (labelCount > 0) scheduleTrainAndPredictAll();
 
     syncUI();
 }
@@ -294,5 +295,5 @@ export async function rerenderSlice(imgState) {
 
     await imgState.backend.allocateImage(imgState.width, imgState.height, rgba);
     await imgState.backend.updateFeatures(slice, state.sigma);
-    if (state.liveUpdate) scheduleTrainAndPredictAll();
+    scheduleTrainAndPredictAll();
 }
