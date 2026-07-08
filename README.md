@@ -2,10 +2,10 @@
 
 
 # 🦖 Quantosaurus
-Count cells in your browser using a pixel-classifier. Inspired by Ilastik.
+Use machine learning to count your cells, all inside the browser. Completely local, no internet connection required. Inspired by Ilastik.
 
 ### Why
-A friend needed help counting cells, but I couldn't find any simple, browser-accessible tools. I also wanted to see how good WebGPU could be for a non-trivial task like pixel-classification. Filter-computation, random-forest inference and component-connection is all done on the GPU as well.
+A friend needed help counting cells in her lab, but I couldn't find any simple, accessible tools. I also wanted to see how good WebGPU could be for a non-trivial task like pixel-classification. Filter-computation, random-forest inference and component-connection is all done via WebGPU
 
 ### Features
  - `.tif`, `.png`, and `.jpg` support.
@@ -14,12 +14,12 @@ A friend needed help counting cells, but I couldn't find any simple, browser-acc
  - Figma-style canvas navigation.
 
 # Development
-Because there's no backend, just pull the repo and serve over localhost (to enable WebGPU access).
+No backend, no build step. Just pull the repo, and serve over localhost.
 
 ### TODO:
  - [ ] 3D support
  - [x] ~Contrast sliders~
- - [ ] Export Ilastik-compatible `.ilp` files
+ - [ ] Export trained models as Ilastik-compatible `.ilp` files
  - [ ] Multi-file batching
 
 ### Tests
