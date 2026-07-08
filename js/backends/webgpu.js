@@ -36,6 +36,13 @@ export class WebGpuBackend {
         this.statsBuffer = null;
         this.statsCounterBuffer = null;
 
+        // Composite render pipeline + its window uniform buffer, built once per
+        // allocateImage (width/height/colors are fixed for the image's lifetime).
+        // setWindow only writes into windowBuffer and re-records the draw — no
+        // shader recompile / pipeline rebuild on the drag hot path.
+        this.compositePipeline = null;
+        this.windowBuffer = null;
+
         this.labelColors = labelColors || [
             'rgba(255,0,0,1.0)',
             'rgba(0,255,0,1.0)',
@@ -165,6 +172,44 @@ export class WebGpuBackend {
         if (this.featureBuffer) { this.featureBuffer.destroy(); this.featureBuffer = null; }
         if (this.statsBuffer) { this.statsBuffer.destroy(); this.statsBuffer = null; }
         if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
+
+        this._buildCompositePipeline();
+        // Seed the window uniform to match the windowLo/windowHi set above.
+        this.device.queue.writeBuffer(this.windowBuffer, 0, new Float32Array([this.windowLo, this.windowHi]));
+    }
+
+    /**
+     * Compiles the composite render pipeline for the current width/height/label
+     * colors and (re)allocates its window uniform buffer. Called once per
+     * allocateImage — NOT per frame — since shader compilation and pipeline
+     * creation are too expensive to repeat while the user drags the contrast
+     * slider (see setWindow/renderComposite, which only touch the uniform buffer
+     * and bind group after this has run).
+     */
+    _buildCompositePipeline() {
+        const colors = this.labelColors;
+        const colorsWGSL = colors.map(parseColorToWGSL).join(',\n            ');
+
+        const code = COMPOSITE_SHADER
+            .replace(/{{WIDTH}}/g, this.width)
+            .replace(/{{HEIGHT}}/g, this.height)
+            .replace(/{{NUM_COLORS}}/g, colors.length)
+            .replace(/{{COLORS_ARRAY}}/g, colorsWGSL);
+
+        const module = this.device.createShaderModule({ code });
+        this.compositePipeline = this.device.createRenderPipeline({
+            layout: 'auto',
+            vertex: { module, entryPoint: 'vs_main' },
+            fragment: { module, entryPoint: 'fs_main', targets: [{ format: this.format }] },
+            primitive: { topology: 'triangle-strip' }
+        });
+
+        if (this.windowBuffer) this.windowBuffer.destroy();
+        // Window { lo: f32, hi: f32 } — 8 bytes, updated via writeBuffer in setWindow.
+        this.windowBuffer = this.device.createBuffer({
+            size: 8,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
     }
 
     /**
@@ -704,37 +749,24 @@ export class WebGpuBackend {
         this.renderComposite();
     }
 
-    /** Paints the canvas: the original image with the argmax class overlaid where classified. */
+    /**
+     * Paints the canvas: the original image with the argmax class overlaid where
+     * classified. Reuses the pipeline built by _buildCompositePipeline (in
+     * allocateImage) — only the bind group is rebuilt here, since probBuffer is
+     * destroyed/recreated by runInference and must be re-bound each time it
+     * changes. Bind-group creation is cheap (no shader work), so this is safe to
+     * call every frame, including on every contrast-slider tick.
+     */
     renderComposite() {
-        if (!this.rawIntensityTexture || !this.probBuffer) return;
-
-        const colors = this.labelColors;
-        const colorsWGSL = colors.map(parseColorToWGSL).join(',\n            ');
-
-        const code = COMPOSITE_SHADER
-            .replace(/{{WIDTH}}/g, this.width)
-            .replace(/{{HEIGHT}}/g, this.height)
-            .replace(/{{NUM_COLORS}}/g, colors.length)
-            .replace(/{{COLORS_ARRAY}}/g, colorsWGSL)
-            // Window bounds are in raw intensity units; format with a decimal point
-            // so they parse as WGSL f32 literals.
-            .replace(/{{WIN_LO}}/g, this.windowLo.toFixed(6))
-            .replace(/{{WIN_HI}}/g, this.windowHi.toFixed(6));
-
-        const module = this.device.createShaderModule({ code });
-        const pipeline = this.device.createRenderPipeline({
-            layout: 'auto',
-            vertex: { module, entryPoint: 'vs_main' },
-            fragment: { module, entryPoint: 'fs_main', targets: [{ format: this.format }] },
-            primitive: { topology: 'triangle-strip' }
-        });
+        if (!this.rawIntensityTexture || !this.probBuffer || !this.compositePipeline) return;
 
         const bindGroup = this.device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(0),
+            layout: this.compositePipeline.getBindGroupLayout(0),
             entries: [
                 // r32float is unfilterable, so the composite uses textureLoad (no sampler).
                 { binding: 0, resource: this.rawIntensityTexture.createView() },
-                { binding: 1, resource: { buffer: this.probBuffer } }
+                { binding: 1, resource: { buffer: this.probBuffer } },
+                { binding: 2, resource: { buffer: this.windowBuffer } }
             ]
         });
 
@@ -746,7 +778,7 @@ export class WebGpuBackend {
                 loadOp: 'clear', storeOp: 'store'
             }]
         });
-        pass.setPipeline(pipeline);
+        pass.setPipeline(this.compositePipeline);
         pass.setBindGroup(0, bindGroup);
         pass.draw(4);
         pass.end();
@@ -755,8 +787,10 @@ export class WebGpuBackend {
 
     /**
      * Sets the display-only contrast window (black point `lo`, white point `hi`,
-     * in the image's raw intensity units) and repaints. This only affects the
-     * composite pass — it does not touch the intensity data fed to feature
+     * in the image's raw intensity units) and repaints. This only writes 8 bytes
+     * into the window uniform buffer and re-records the draw with the existing
+     * pipeline — no shader recompile, so it's cheap enough to call on every
+     * slider-drag tick. Does not touch the intensity data fed to feature
      * extraction, so classification is unchanged and no retrain is triggered.
      * @param {number} lo - Black point; pixels <= lo render black.
      * @param {number} hi - White point; pixels >= hi render white.
@@ -764,6 +798,7 @@ export class WebGpuBackend {
     setWindow(lo, hi) {
         this.windowLo = lo;
         this.windowHi = hi;
+        this.device.queue.writeBuffer(this.windowBuffer, 0, new Float32Array([lo, hi]));
         this.renderComposite();
     }
 
@@ -786,6 +821,8 @@ export class WebGpuBackend {
         if (this.labelBuffer)        { this.labelBuffer.destroy();        this.labelBuffer = null; }
         if (this.statsBuffer)        { this.statsBuffer.destroy();        this.statsBuffer = null; }
         if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
+        if (this.windowBuffer)       { this.windowBuffer.destroy();       this.windowBuffer = null; }
+        this.compositePipeline = null; // GPURenderPipeline has no destroy(); just drop the reference.
     }
 }
 
@@ -984,8 +1021,13 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
     return out;
 }
 
+struct Window { lo: f32, hi: f32 };
+
 @group(0) @binding(0) var t_raw: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read> p_map: array<f32>;
+// Contrast window as a uniform (not a shader-text constant) so dragging the slider
+// only needs a cheap queue.writeBuffer, not a shader recompile + new pipeline.
+@group(0) @binding(2) var<uniform> win: Window;
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
@@ -997,7 +1039,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     // Read the raw intensity (r32float, unfilterable → textureLoad) and apply the
     // display-only contrast window [lo,hi] -> [0,1] in raw units, broadcast to gray.
     let raw_val = textureLoad(t_raw, vec2<i32>(i32(x), i32(y)), 0).r;
-    let v = clamp((raw_val - {{WIN_LO}}) / max({{WIN_HI}} - {{WIN_LO}}, 1e-4), 0.0, 1.0);
+    let v = clamp((raw_val - win.lo) / max(win.hi - win.lo, 1e-4), 0.0, 1.0);
     let raw = vec4<f32>(v, v, v, 1.0);
 
     let base_idx = clamp(y * w + x, 0u, w * h - 1u) * {{NUM_COLORS}}u;

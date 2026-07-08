@@ -6,6 +6,28 @@
 let popoverEl = null;   // the floating panel, created lazily
 let activeImgId = null; // image the popover currently targets, or null when closed
 
+// oninput fires on every pointer-move tick while dragging a range input, which can
+// outpace the display's refresh rate. backend.setWindow is now cheap (a uniform
+// write + redraw, no shader recompile — see webgpu.js), but there's still no reason
+// to redraw more than once per frame, so coalesce bursts of oninput events down to
+// one setWindow/render per animation frame via rAF.
+let _pendingRaf = null;
+let _pendingImg = null;
+
+function scheduleSetWindow(img) {
+    _pendingImg = img;
+    if (_pendingRaf !== null) return; // a redraw is already queued for this frame
+    _pendingRaf = requestAnimationFrame(() => {
+        _pendingRaf = null;
+        _pendingImg.backend.setWindow(_pendingImg.windowLo, _pendingImg.windowHi);
+        _pendingImg = null;
+    });
+}
+
+function cancelPendingSetWindow() {
+    if (_pendingRaf !== null) { cancelAnimationFrame(_pendingRaf); _pendingRaf = null; _pendingImg = null; }
+}
+
 /**
  * Opens (or moves) the contrast popover next to the given image's row and binds
  * its controls to that image. Calling it again for the same image toggles it shut.
@@ -22,6 +44,11 @@ export function openContrastPopover(state, imgId, anchorEl) {
 
     const img = state.images.find(i => i.id === imgId);
     if (!img) return;
+
+    // Switching images without closing first (clicking another row's contrast
+    // button) could otherwise leave a coalesced redraw pending against the image
+    // being switched away from.
+    cancelPendingSetWindow();
 
     if (!popoverEl) popoverEl = buildPopover();
     activeImgId = imgId;
@@ -50,15 +77,17 @@ export function openContrastPopover(state, imgId, anchorEl) {
         hiInput.value = img.windowHi;
     };
 
-    // Keep lo <= hi (napari clamps the handles so they can't cross).
+    // Keep lo <= hi (napari clamps the handles so they can't cross). The readout
+    // updates immediately (cheap DOM text); the actual GPU redraw is coalesced to
+    // once per animation frame via scheduleSetWindow, however fast events fire.
     loInput.oninput = () => {
         img.windowLo = Math.min(parseFloat(loInput.value), img.windowHi);
-        img.backend.setWindow(img.windowLo, img.windowHi);
+        scheduleSetWindow(img);
         render();
     };
     hiInput.oninput = () => {
         img.windowHi = Math.max(parseFloat(hiInput.value), img.windowLo);
-        img.backend.setWindow(img.windowLo, img.windowHi);
+        scheduleSetWindow(img);
         render();
     };
 
@@ -70,6 +99,7 @@ export function openContrastPopover(state, imgId, anchorEl) {
 /** Hides the shared popover, if open. */
 export function closeContrastPopover() {
     if (popoverEl) popoverEl.style.display = 'none';
+    cancelPendingSetWindow();
     activeImgId = null;
 }
 
