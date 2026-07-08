@@ -41,7 +41,7 @@ export async function addFiles(state, files) {
         const isDuplicate = state.images.some(img => img.name === file.name && img.fileSize === file.size);
 
         if (!isDuplicate && isValidFileType) {
-            await addImage(file, state);
+            await addImage(state, file);
         }
     }
 }
