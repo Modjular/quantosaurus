@@ -1,4 +1,4 @@
-# 🧮 Quanto
+# 🧮 Quantosaurus
 Count cells in your browser using a pixel-classifier. Inspired by Ilastik.
 
 ### Why
