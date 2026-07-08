@@ -34,6 +34,11 @@ export class WebGpuBackend {
             'rgba(0,255,0,1.0)',
             'rgba(0,0,255,1.0)',
         ];
+
+        // Display-only contrast window (black/white points) in normalized [0,1]
+        // space. Identity by default; see setWindow.
+        this.windowLo = 0.0;
+        this.windowHi = 1.0;
     }
 
     /**
@@ -693,7 +698,10 @@ export class WebGpuBackend {
             .replace(/{{WIDTH}}/g, this.width)
             .replace(/{{HEIGHT}}/g, this.height)
             .replace(/{{NUM_COLORS}}/g, colors.length)
-            .replace(/{{COLORS_ARRAY}}/g, colorsWGSL);
+            .replace(/{{COLORS_ARRAY}}/g, colorsWGSL)
+            // Formatted with a decimal point so they parse as WGSL f32 literals.
+            .replace(/{{WIN_LO}}/g, this.windowLo.toFixed(6))
+            .replace(/{{WIN_HI}}/g, this.windowHi.toFixed(6));
 
         const module = this.device.createShaderModule({ code });
         const pipeline = this.device.createRenderPipeline({
@@ -725,6 +733,20 @@ export class WebGpuBackend {
         pass.draw(4);
         pass.end();
         this.device.queue.submit([enc.finish()]);
+    }
+
+    /**
+     * Sets the display-only contrast window (black point `lo`, white point `hi`,
+     * both in normalized [0,1] display space) and repaints. This only affects the
+     * composite pass — it does not touch the intensity data fed to feature
+     * extraction, so classification is unchanged and no retrain is triggered.
+     * @param {number} lo - Black point; pixels <= lo render black.
+     * @param {number} hi - White point; pixels >= hi render white.
+     */
+    setWindow(lo, hi) {
+        this.windowLo = lo;
+        this.windowHi = hi;
+        this.renderComposite();
     }
 
     /**
@@ -950,7 +972,9 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let raw = textureSample(t_raw, s, uv);
+    var raw = textureSample(t_raw, s, uv);
+    // Display-only contrast window: remap [lo,hi] -> [0,1]. Identity at lo=0,hi=1.
+    raw = vec4(clamp((raw.rgb - {{WIN_LO}}) / max({{WIN_HI}} - {{WIN_LO}}, 1e-4), vec3(0.0), vec3(1.0)), raw.a);
     let w = u32({{WIDTH}});
     let h = u32({{HEIGHT}});
     let x = u32(uv.x * f32(w));

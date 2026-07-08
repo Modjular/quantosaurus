@@ -36,6 +36,11 @@ export class WebGl2Backend {
       this.labels = null;
       this.denseStats = null;
 
+      // Display-only contrast window (black/white points) in normalized [0,1]
+      // space. Identity by default; see setWindow.
+      this.windowLo = 0.0;
+      this.windowHi = 1.0;
+
       this.labelColors = labelColors || [
           'rgba(255,0,0,1.0)',
           'rgba(0,255,0,1.0)',
@@ -334,8 +339,24 @@ export class WebGl2Backend {
       
       gl.uniform1i(gl.getUniformLocation(this.progComposite, "u_original"), 0);
       gl.uniform1i(gl.getUniformLocation(this.progComposite, "u_probs"), 1);
+      gl.uniform1f(gl.getUniformLocation(this.progComposite, "u_winLo"), this.windowLo);
+      gl.uniform1f(gl.getUniformLocation(this.progComposite, "u_winHi"), this.windowHi);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  /**
+   * Sets the display-only contrast window (black point `lo`, white point `hi`,
+   * both in normalized [0,1] display space) and repaints. This only affects the
+   * composite pass — it does not touch the intensity data fed to feature
+   * extraction, so classification is unchanged and no retrain is triggered.
+   * @param {number} lo - Black point; pixels <= lo render black.
+   * @param {number} hi - White point; pixels >= hi render white.
+   */
+  setWindow(lo, hi) {
+      this.windowLo = lo;
+      this.windowHi = hi;
+      this.renderComposite();
   }
 
   /**
@@ -858,11 +879,15 @@ precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_original;
 uniform sampler2D u_probs;
+uniform float u_winLo; // display contrast black point (normalized [0,1])
+uniform float u_winHi; // display contrast white point (normalized [0,1])
 
 out vec4 fragColor;
 
 void main() {
   vec4 raw = texture(u_original, v_uv);
+  // Display-only contrast window: remap [lo,hi] -> [0,1]. Identity when lo=0,hi=1.
+  raw.rgb = clamp((raw.rgb - u_winLo) / max(u_winHi - u_winLo, 1e-4), 0.0, 1.0);
   vec4 probs = texture(u_probs, v_uv);
   
   float max_p = -1.0;

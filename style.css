@@ -128,7 +128,41 @@ h2 {
 
 input[type="range"] {
     width: 100%;
-    accent-color: var(--accent-primary);
+    height: 22px;
+    margin: 0;
+    background: none;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 3px;
+    background: var(--bg-control);
+    border-radius: 2px;
+}
+input[type="range"]::-moz-range-track {
+    height: 3px;
+    background: var(--bg-control);
+    border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -6px; /* center the 14px thumb on the 3px track */
+    border-radius: 50%;
+    background: var(--accent-primary);
+    border: 2px solid var(--text-light);
+    cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    border: 2px solid var(--text-light);
+    cursor: pointer;
 }
 
 input[type="checkbox"] {
@@ -269,8 +303,26 @@ button:disabled {
     border-radius: var(--radius-sm);
     line-height: 1;
 }
-.img-delete:hover {
+/* :not(:disabled) matches the specificity of the global button:hover rule so this
+   red actually wins (a plain .img-delete:hover loses to button:hover:not(:disabled)). */
+.img-delete:hover:not(:disabled) {
     background: var(--accent-danger);
+    color: var(--text-light);
+}
+
+.img-contrast {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-disabled);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+    line-height: 1;
+}
+.img-contrast:hover:not(:disabled) {
+    background: var(--accent-subtle-hover);
     color: var(--text-light);
 }
 
@@ -377,6 +429,92 @@ button:disabled {
     line-height: 1.4;
     color: var(--text-muted);
     margin: 0;
+}
+
+/* ── Per-image Contrast Popover ───────────────────────────────────── */
+.contrast-popover {
+    position: fixed;
+    z-index: 1000;
+    width: 200px;
+    display: none;
+    /* A more visible border than .heavy-panel's faint default, plus a floating
+       drop shadow in place of its inset shadow. */
+    border-color: var(--border-control);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+/* Caret pointing at the row button. Default: popover sits to the button's right,
+   so the caret points left off the popover's left edge. --caret-top is set in JS
+   to line the tip up with the button's center. */
+.contrast-popover::before,
+.contrast-popover::after {
+    content: "";
+    position: absolute;
+    top: var(--caret-top, 16px);
+    width: 0;
+    height: 0;
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+}
+.contrast-popover::before { /* border-colored triangle */
+    left: -8px;
+    border-right: 8px solid var(--border-control);
+}
+.contrast-popover::after {  /* fill triangle, inset 1px to reveal the border */
+    left: -7px;
+    border-right: 8px solid var(--bg-base);
+}
+/* Flipped: popover placed to the button's left, so the caret points right. */
+.contrast-popover.on-left::before {
+    left: auto;
+    right: -8px;
+    border-right: none;
+    border-left: 8px solid var(--border-control);
+}
+.contrast-popover.on-left::after {
+    left: auto;
+    right: -7px;
+    border-right: none;
+    border-left: 8px solid var(--bg-base);
+}
+
+/* Dual-thumb "contrast limits" slider: two range inputs overlaid on one track.
+   Visuals come from the shared input[type=range] rule above; here we only stack
+   the two inputs and make just their thumbs (not the tracks) interactive so both
+   handles stay draggable. */
+.contrast-slider {
+    position: relative;
+    height: 22px;
+    margin: 2px 0;
+}
+.contrast-slider input[type="range"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none; /* track ignores clicks; only thumbs are interactive */
+}
+.contrast-slider input[type="range"]::-webkit-slider-thumb {
+    pointer-events: auto;
+}
+.contrast-slider input[type="range"]::-moz-range-thumb {
+    pointer-events: auto;
+}
+/* The two overlaid tracks coincide; hide the upper one so it doesn't double up. */
+.contrast-slider input[type="range"].contrast-hi::-webkit-slider-runnable-track {
+    background: none;
+}
+.contrast-slider input[type="range"].contrast-hi::-moz-range-track {
+    background: none;
+}
+
+.contrast-readout {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.contrast-readout b {
+    color: var(--text-dim);
+    font-weight: 600;
 }
 
 /* ── Viewport Canvas Board ────────────────────────────────────────── */

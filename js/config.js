@@ -15,3 +15,7 @@ export const CAMERA_ZOOM_MIN = 0.1;
 export const CAMERA_ZOOM_MAX = 32;
 export const CAMERA_ZOOM_SENSITIVITY = 0.01;
 export const TRAIN_DEBOUNCE_MS = 300;
+// Default display contrast window, in the normalized [0,1] display space produced
+// by intensityToRGBA's auto-stretch. lo=0/hi=1 is an identity remap, so images look
+// exactly as they do today until the user adjusts the per-image contrast control.
+export const CONTRAST_DEFAULT = { lo: 0.0, hi: 1.0 };

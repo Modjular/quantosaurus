@@ -51,7 +51,7 @@ export function updateClassStatBadges(counts) {
  * @param {{onReorder: (direction: -1|1) => void, onDelete: () => void}} handlers
  * @returns {HTMLDivElement} The constructed row element (not yet attached).
  */
-export function createImageRow(imgId, name, { onReorder, onDelete }) {
+export function createImageRow(imgId, name, { onReorder, onDelete, onContrast }) {
     const row = document.createElement('div');
     row.className  = 'img-row';
     row.dataset.id = imgId;
@@ -80,6 +80,12 @@ export function createImageRow(imgId, name, { onReorder, onDelete }) {
     nameEl.textContent = name;
     nameEl.title       = name;
 
+    const btnContrast = document.createElement('button');
+    btnContrast.className   = 'img-contrast';
+    btnContrast.textContent = '◐';
+    btnContrast.title       = 'Adjust contrast';
+    btnContrast.onclick     = (e) => { e.stopPropagation(); onContrast?.(btnContrast); };
+
     const btnDel = document.createElement('button');
     btnDel.className   = 'img-delete';
     btnDel.textContent = '✕';
@@ -88,6 +94,7 @@ export function createImageRow(imgId, name, { onReorder, onDelete }) {
 
     header.appendChild(reorder);
     header.appendChild(nameEl);
+    header.appendChild(btnContrast);
     header.appendChild(btnDel);
 
     row.appendChild(loadBar);

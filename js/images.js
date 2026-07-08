@@ -1,8 +1,9 @@
-import { LABEL_COLORS, RF_CONFIG } from './config.js';
+import { LABEL_COLORS, RF_CONFIG, CONTRAST_DEFAULT } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
 import { createImageRow, syncUI } from './ui.js';
+import { openContrastPopover } from './contrast.js';
 import { scheduleTraining } from './training.js';
 
 
@@ -71,8 +72,9 @@ export async function addFiles(state, files) {
 export async function addImage(state, file) {
     const imgId = crypto.randomUUID();
     const row   = createImageRow(imgId, file.name, {
-        onReorder: (dir) => reorderImage(state, imgId, dir),
-        onDelete:  ()    => deleteImage(state, imgId),
+        onReorder: (dir)      => reorderImage(state, imgId, dir),
+        onDelete:  ()         => deleteImage(state, imgId),
+        onContrast: (anchor)  => openContrastPopover(state, imgId, anchor),
     });
     row.classList.add('loading');
     document.getElementById('img-empty').style.display = 'none';
@@ -141,6 +143,8 @@ export async function addImage(state, file) {
         backend,
         width: w, height: h,
         intensityArray,
+        windowLo: CONTRAST_DEFAULT.lo,
+        windowHi: CONTRAST_DEFAULT.hi,
         labels: [],
         gpuCanvas, labelCanvas, container,
         _cachedRect: null,
