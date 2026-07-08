@@ -23,16 +23,6 @@ export function refreshEmptyState(state) {
         state.images.length === 0 ? '' : 'none';
 }
 
-export function updateImageStateBadge(imgState) {
-    const badge = imgState._sidebarRow.querySelector('.img-label-badge');
-    const count = imgState.labels.length;
-
-    if (!badge) return;
-
-    badge.textContent = count === 0 ? 'no labels' : `${count} label${count !== 1 ? 's' : ''}`;
-    badge.classList.toggle('has-labels', count > 0);
-}
-
 // createImageRow — builds the DOM for one entry.
 // The controller supplies { onReorder(direction), onDelete() } so this view
 // stays decoupled from the image-lifecycle module.
@@ -65,10 +55,6 @@ export function createImageRow(imgId, name, { onReorder, onDelete }) {
     nameEl.textContent = name;
     nameEl.title       = name;
 
-    const badge = document.createElement('div');
-    badge.className = 'img-label-badge';
-    badge.dataset.badge = imgId;
-
     const btnDel = document.createElement('button');
     btnDel.className   = 'img-delete';
     btnDel.textContent = '✕';
@@ -77,7 +63,6 @@ export function createImageRow(imgId, name, { onReorder, onDelete }) {
 
     header.appendChild(reorder);
     header.appendChild(nameEl);
-    header.appendChild(badge);
     header.appendChild(btnDel);
 
     row.appendChild(loadBar);

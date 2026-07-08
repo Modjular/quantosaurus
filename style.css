@@ -258,19 +258,6 @@ button:disabled {
     text-overflow: ellipsis;
 }
 
-.img-label-badge {
-    font-size: 10px;
-    color: var(--text-muted);
-    flex-shrink: 0;
-    background: var(--bg-base);
-    border-radius: var(--radius-sm);
-    padding: 2px 5px;
-    white-space: nowrap;
-}
-.img-label-badge.has-labels {
-    color: var(--accent-success);
-}
-
 .img-delete {
     flex-shrink: 0;
     background: none;

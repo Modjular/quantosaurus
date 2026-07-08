@@ -2,7 +2,7 @@ import { LABEL_COLORS, RF_CONFIG } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
-import { createImageRow, syncUI, updateImageStateBadge } from './ui.js';
+import { createImageRow, syncUI } from './ui.js';
 import { scheduleTraining } from './training.js';
 
 
@@ -151,7 +151,6 @@ export async function addImage(state, file) {
     ro.observe(labelCanvas);
 
     row.classList.remove('loading');
-    updateImageStateBadge(imgState);
 
     syncUI(state);
 }
@@ -271,6 +270,4 @@ export function paint(state, imgState, e) {
     } else {
         console.error("Unrecognized tool mode:", state.toolMode);
     }
-
-    updateImageStateBadge(imgState);
 }
