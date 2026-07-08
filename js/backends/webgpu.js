@@ -53,6 +53,15 @@ export class WebGpuBackend {
         // intensity units. Seeded to the data range in allocateImage; see setWindow.
         this.windowLo = 0.0;
         this.windowHi = 1.0;
+
+        // Compiled compute pipelines keyed by a stable per-pass id. The filter,
+        // inference, gather, find-max, and CCL passes bake only width/height/label
+        // count into their WGSL — constant for the image's lifetime — so they
+        // compile once and are reused across every retrain instead of being rebuilt
+        // per call. Cleared in allocateImage (those constants can change there).
+        // Passes whose code varies per call (the stats accumulator/compaction bake
+        // MAX_LABELS, which tracks the segmentation) opt out by omitting a cacheKey.
+        this._pipelineCache = new Map();
     }
 
     /**
@@ -83,12 +92,20 @@ export class WebGpuBackend {
      * or each call can use its own encoder + submit if passes must be sequenced
      * around a CPU readback in between.
      */
-    _addComputePass(encoder, { code, entryPoint, bindings, dispatchX, dispatchY = 1, dispatchZ = 1 }) {
-        const module = this.device.createShaderModule({ code });
-        const pipeline = this.device.createComputePipeline({
-            layout: 'auto',
-            compute: { module, entryPoint }
-        });
+    _addComputePass(encoder, { code, entryPoint, bindings, dispatchX, dispatchY = 1, dispatchZ = 1, cacheKey = null }) {
+        // Compiling the module + building the pipeline is the expensive part; the
+        // bind group (which references the actual buffers, and so must be rebuilt
+        // each call) is cheap. When the caller supplies a cacheKey — meaning this
+        // pass's WGSL is stable for the image's lifetime — reuse the pipeline.
+        let pipeline = cacheKey !== null ? this._pipelineCache.get(cacheKey) : null;
+        if (!pipeline) {
+            const module = this.device.createShaderModule({ code });
+            pipeline = this.device.createComputePipeline({
+                layout: 'auto',
+                compute: { module, entryPoint }
+            });
+            if (cacheKey !== null) this._pipelineCache.set(cacheKey, pipeline);
+        }
         const bindGroup = this.device.createBindGroup({
             layout: pipeline.getBindGroupLayout(0),
             entries: bindings
@@ -138,6 +155,9 @@ export class WebGpuBackend {
         this.width = width;
         this.height = height;
         this.intensityScale = range.scale;
+        // Cached compute pipelines bake in the (about to change) width/height/label
+        // count, so drop them; they recompile lazily on next use.
+        this._pipelineCache.clear();
         // Default the display window to the data range → reproduces the auto-stretch look.
         this.windowLo = range.dataMin;
         this.windowHi = range.dataMax;
@@ -241,6 +261,10 @@ export class WebGpuBackend {
 
         const enc = this.device.createCommandEncoder();
 
+        // Keyed by class + threshold since those are baked into baseCode (dispatched
+        // per class every retrain, so a bounded handful of distinct pipelines).
+        const cclKey = `${targetClassIdx}:${threshold.toFixed(4)}`;
+
         // Pass 1: Initialize values based on raw inference thresholds
         this._addComputePass(enc, {
             code: baseCode,
@@ -249,7 +273,8 @@ export class WebGpuBackend {
                 { binding: 0, resource: { buffer: this.probBuffer } },
                 { binding: 1, resource: { buffer: this.labelBuffer } }
             ],
-            dispatchX, dispatchY
+            dispatchX, dispatchY,
+            cacheKey: `ccl-init:${cclKey}`
         });
 
         // Pass 2: Neighborhood boundary checking and equivalence linking
@@ -259,7 +284,8 @@ export class WebGpuBackend {
             bindings: [
                 { binding: 1, resource: { buffer: this.labelBuffer } }
             ],
-            dispatchX, dispatchY
+            dispatchX, dispatchY,
+            cacheKey: `ccl-merge:${cclKey}`
         });
 
         // Pass 3: Path relaxation (Tree flattening) to find absolute roots
@@ -269,7 +295,8 @@ export class WebGpuBackend {
             bindings: [
                 { binding: 1, resource: { buffer: this.labelBuffer } }
             ],
-            dispatchX, dispatchY
+            dispatchX, dispatchY,
+            cacheKey: `ccl-flatten:${cclKey}`
         });
 
         this.device.queue.submit([enc.finish()]);
@@ -305,7 +332,8 @@ export class WebGpuBackend {
                 { binding: 0, resource: { buffer: this.labelBuffer } },
                 { binding: 1, resource: { buffer: maxLabelBuffer } }
             ],
-            dispatchX, dispatchY
+            dispatchX, dispatchY,
+            cacheKey: 'findmax'
         });
         this.device.queue.submit([maxEncoder.finish()]);
 
@@ -587,7 +615,8 @@ export class WebGpuBackend {
                 { binding: 1, resource: { buffer: gpuHoriz } },
                 { binding: 2, resource: { buffer: kernelBuffer } }
             ],
-            dispatchX, dispatchY
+            dispatchX, dispatchY,
+            cacheKey: 'feat-horiz'
         });
 
         this._addComputePass(enc, {
@@ -598,7 +627,8 @@ export class WebGpuBackend {
                 { binding: 1, resource: { buffer: gpuOutput } },
                 { binding: 2, resource: { buffer: kernelBuffer } }
             ],
-            dispatchX, dispatchY
+            dispatchX, dispatchY,
+            cacheKey: 'feat-vert'
         });
 
         this.device.queue.submit([enc.finish()]);
@@ -650,6 +680,7 @@ export class WebGpuBackend {
         this._addComputePass(enc, {
             code: GATHER_FEATURES_SHADER,
             entryPoint: 'main',
+            cacheKey: 'gather',
             bindings: [
                 { binding: 0, resource: { buffer: this.featureBuffer } },
                 { binding: 1, resource: { buffer: indicesBuffer } },
@@ -732,6 +763,7 @@ export class WebGpuBackend {
         this._addComputePass(enc, {
             code,
             entryPoint: 'main',
+            cacheKey: 'inference',
             bindings: [
                 { binding: 0, resource: { buffer: this.featureBuffer } },
                 { binding: 1, resource: { buffer: forestBuffer } },
@@ -822,7 +854,9 @@ export class WebGpuBackend {
         if (this.statsBuffer)        { this.statsBuffer.destroy();        this.statsBuffer = null; }
         if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
         if (this.windowBuffer)       { this.windowBuffer.destroy();       this.windowBuffer = null; }
-        this.compositePipeline = null; // GPURenderPipeline has no destroy(); just drop the reference.
+        // Pipelines have no destroy(); drop references so they can be GC'd.
+        this.compositePipeline = null;
+        this._pipelineCache.clear();
     }
 }
 
