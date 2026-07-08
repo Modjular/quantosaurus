@@ -1,9 +1,15 @@
+/**
+ * Refreshes all image-count-driven chrome (status line, export button, empty
+ * state) in one call. Invoke after any change to state.images.
+ * @param {Object} state - Shared app state.
+ */
 export function syncUI(state) {
     updateStatus(state);
     updateExportButtonCount(state);
     refreshEmptyState(state);
 }
 
+/** Updates the status line with the loaded-image count. @param {Object} state */
 export function updateStatus(state) {
     const n = state.images.length;
     document.getElementById('status').innerText =
@@ -11,6 +17,7 @@ export function updateStatus(state) {
                 : `${n} image${n !== 1 ? 's' : ''} loaded.`;
 }
 
+/** Enables/labels the "Export Loaded Images" button by image count. @param {Object} state */
 export function updateExportButtonCount(state) {
     const btn = document.getElementById('btnExportAll');
     const n   = state.images.length;
@@ -18,13 +25,17 @@ export function updateExportButtonCount(state) {
     btn.innerText = n > 0 ? `Export Loaded Images (${n})` : 'Export Loaded Images';
 }
 
+/** Shows/hides the image-list empty-state placeholder. @param {Object} state */
 export function refreshEmptyState(state) {
     document.getElementById('img-empty').style.display =
         state.images.length === 0 ? '' : 'none';
 }
 
-// counts[classIdx] = number of detected objects for that class, summed across
-// all loaded images.
+/**
+ * Writes per-class detected-object counts into the class-selector badges.
+ * @param {Array<number>} counts - counts[classIdx] = objects for that class,
+ *   summed across all loaded images.
+ */
 export function updateClassStatBadges(counts) {
     counts.forEach((count, index) => {
         const badge = document.getElementById(`stat-class-${index}`);
@@ -32,9 +43,14 @@ export function updateClassStatBadges(counts) {
     });
 }
 
-// createImageRow — builds the DOM for one entry.
-// The controller supplies { onReorder(direction), onDelete() } so this view
-// stays decoupled from the image-lifecycle module.
+/**
+ * Builds the sidebar DOM row for one image. The controller supplies the
+ * callbacks so this view stays decoupled from the image-lifecycle module.
+ * @param {string} imgId - Image id, stored on the row's dataset.
+ * @param {string} name - Display name.
+ * @param {{onReorder: (direction: -1|1) => void, onDelete: () => void}} handlers
+ * @returns {HTMLDivElement} The constructed row element (not yet attached).
+ */
 export function createImageRow(imgId, name, { onReorder, onDelete }) {
     const row = document.createElement('div');
     row.className  = 'img-row';

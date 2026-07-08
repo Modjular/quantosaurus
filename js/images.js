@@ -6,6 +6,15 @@ import { createImageRow, syncUI } from './ui.js';
 import { scheduleTraining } from './training.js';
 
 
+/**
+ * Creates a compute/render backend for one image canvas, preferring WebGPU and
+ * falling back to WebGL2. Both implement the same backend interface (see
+ * backends/webgpu.js and backends/webgl2.js).
+ * @param {HTMLCanvasElement} canvas - The per-image GPU canvas to render into.
+ * @param {Array<string>} labelColors - CSS color per class.
+ * @returns {Promise<WebGpuBackend|WebGl2Backend>} An initialized backend.
+ * @throws If neither WebGPU nor WebGL2 is available.
+ */
 async function initializeBackend(canvas, labelColors) {
   // 1. Try WebGPU first
   if (navigator.gpu) {
@@ -34,6 +43,12 @@ async function initializeBackend(canvas, labelColors) {
   throw new Error("No compatible rendering backend found.");
 }
 
+/**
+ * Adds a batch of dropped/selected files, skipping unsupported types and
+ * duplicates (matched by name + size).
+ * @param {Object} state - Shared app state.
+ * @param {Iterable<File>} files - Files to import.
+ */
 export async function addFiles(state, files) {
     for (const file of files) {
         const validFileTypes = ['.tif', '.tiff', '.png', '.jpg', '.jpeg'];
@@ -46,6 +61,13 @@ export async function addFiles(state, files) {
     }
 }
 
+/**
+ * Loads a single image file, builds its sidebar row and canvas tile, spins up a
+ * backend, computes initial features, and registers the paint handlers. Bails
+ * out (cleaning up the partial DOM) on load failure or non-2D images.
+ * @param {Object} state - Shared app state; the new image is pushed to state.images.
+ * @param {File} file - The image file to load.
+ */
 export async function addImage(state, file) {
     const imgId = crypto.randomUUID();
     const row   = createImageRow(imgId, file.name, {
@@ -155,6 +177,13 @@ export async function addImage(state, file) {
     syncUI(state);
 }
 
+/**
+ * Moves an image one slot up or down, keeping state.images, the canvas tiles,
+ * and the sidebar rows in the same visual order (which is also export order).
+ * @param {Object} state - Shared app state.
+ * @param {string} imgId - Id of the image to move.
+ * @param {-1|1} direction - -1 to move up, +1 to move down.
+ */
 export function reorderImage(state, imgId, direction) {
     const idx = state.images.findIndex(i => i.id === imgId);
     if (idx === -1) return;
@@ -179,6 +208,12 @@ export function reorderImage(state, imgId, direction) {
     else                  list.insertBefore(rb, ra);
 }
 
+/**
+ * Removes an image and frees its backend/GPU resources. Prompts for
+ * confirmation first if it carries labels, and retrains afterward if so.
+ * @param {Object} state - Shared app state.
+ * @param {string} imgId - Id of the image to delete.
+ */
 export function deleteImage(state, imgId) {
     const idx = state.images.findIndex(i => i.id === imgId);
     if (idx === -1) return;
@@ -246,6 +281,14 @@ function getPixelsInRadius(cx, cy, radius, width, height) {
     return pixels;
 }
 
+/**
+ * Applies the active brush at a mouse event's location: maps client coords to
+ * image pixels, paints or erases the brush footprint on the label canvas, and
+ * updates imgState.labels accordingly (dropping any labels the brush overwrites).
+ * @param {Object} state - Shared app state; reads toolMode and currentClass.
+ * @param {Object} imgState - The target image's state entry.
+ * @param {MouseEvent} e - The triggering mouse event.
+ */
 export function paint(state, imgState, e) {
     const rect   = imgState._cachedRect || imgState.labelCanvas.getBoundingClientRect();
     const scaleX = imgState.width  / rect.width;

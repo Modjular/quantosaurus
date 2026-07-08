@@ -1,3 +1,21 @@
+/**
+ * WebGL2 compute/render backend — the fallback path when WebGPU is unavailable.
+ * Interchangeable with WebGpuBackend; both expose the same interface used by the
+ * image lifecycle and training code:
+ *
+ *   initialize, allocateImage, updateFeatures, downloadFeatures,
+ *   gatherFeaturesForTraining, runInference, renderComposite,
+ *   downloadProbabilities, computeConnectedComponents, computeStats,
+ *   downloadStats, downloadLabels, destroy.
+ *
+ * Pipeline: a separable Gaussian-derivative filter bank (two fragment passes,
+ * horizontal then vertical) writes 8 per-pixel features across two RGBA float
+ * textures; a Random Forest inference pass turns features into per-class
+ * probabilities; a composite pass overlays the argmax class on the image. WebGL2
+ * has no compute shaders/atomics, so connected-component labeling and stats run
+ * on the CPU (see cclLabel/accumulateStats) with the same output contract as the
+ * WebGPU backend.
+ */
 export class WebGl2Backend {
   constructor(labelColors) {
       this.gl = null;
@@ -32,6 +50,12 @@ export class WebGl2Backend {
       this.quadVao = null;
   }
 
+  /**
+   * Acquires the WebGL2 context (requires the float-render extension), sets up
+   * the fullscreen quad, and compiles all shader programs.
+   * @param {HTMLCanvasElement} canvas
+   * @throws If WebGL2 or EXT_color_buffer_float is unavailable.
+   */
   async initialize(canvas) {
       this.gl = canvas.getContext('webgl2', { antialias: false });
       if (!this.gl) throw new Error("WebGL2 not supported");
@@ -43,6 +67,14 @@ export class WebGl2Backend {
       this._compileShaders();
   }
 
+  /**
+   * (Re)allocates all per-image textures and framebuffers for a new image,
+   * freeing any previous ones, and seeds the probability buffer to -1
+   * (the "unclassified" sentinel).
+   * @param {number} width
+   * @param {number} height
+   * @param {Uint8Array|Uint8ClampedArray} rgbaData - Source RGBA pixels.
+   */
   async allocateImage(width, height, rgbaData) {
       this.width = width;
       this.height = height;
@@ -75,11 +107,19 @@ export class WebGl2Backend {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
+  /**
+   * Recomputes the feature textures for the given intensity image at the given
+   * sigma, then repaints the composite view.
+   * @param {Float32Array} intensityArray - Normalized single-channel intensities.
+   * @param {number} sigma - Gaussian scale for the filter bank.
+   */
   async updateFeatures(intensityArray, sigma) {
       this._extractFeatures(intensityArray, sigma);
       this.renderComposite();
   }
 
+  // Runs the two-pass separable filter bank, writing 8 features into
+  // featTexture0 (0-3) and featTexture1 (4-7). `scale` is the Gaussian sigma.
   _extractFeatures(data, scale) {
       const gl = this.gl;
       const k0 = gaussian_kernel(scale, 0);
@@ -139,6 +179,13 @@ export class WebGl2Backend {
       gl.uniform1i(gl.getUniformLocation(prog, "u_r0sub"), k0sub.length - 1);
   }
 
+  /**
+   * Computes features and reads all 8 channels back to the CPU, interleaved as
+   * `[f0..f7]` per pixel.
+   * @param {Float32Array} intensityArray
+   * @param {number} scale - Gaussian sigma.
+   * @returns {Promise<Float32Array>} width*height*8 features.
+   */
   async downloadFeatures(intensityArray, scale) {
       this._extractFeatures(intensityArray, scale);
       const gl = this.gl;
@@ -166,8 +213,14 @@ export class WebGl2Backend {
       return out;
   }
 
+  /**
+   * Gathers the 8-feature vectors for a set of labeled pixels, to feed
+   * FlatRandomForest.train. Returns them row-major as `numLabels * 8` floats.
+   * @param {Uint32Array} indicesArray - Flat pixel indices (y * width + x).
+   * @returns {Promise<Float32Array>} Features for each labeled pixel.
+   */
   async gatherFeaturesForTraining(indicesArray) {
-      // In WebGL2, reading full texture to CPU and extracting there is usually 
+      // In WebGL2, reading full texture to CPU and extracting there is usually
       // cleaner/faster than drawing point primitives to scatter/gather.
       const gl = this.gl;
       const numLabels = indicesArray.length;
@@ -196,6 +249,14 @@ export class WebGl2Backend {
       return features;
   }
 
+  /**
+   * Runs the trained forest over every pixel, writing per-class probabilities
+   * into the probability texture, then repaints the composite. The forest is
+   * uploaded as a float texture; see the packing note below for why each node
+   * field is converted by its true type.
+   * @param {FlatRandomForest} rf - A trained forest (max 8 trees).
+   * @throws If the forest has more than 8 trees.
+   */
   async runInference(rf) {
       const gl = this.gl;
 
@@ -258,6 +319,7 @@ export class WebGl2Backend {
       this.renderComposite();
   }
 
+  /** Paints the canvas: the original image with the argmax class overlaid where classified. */
   renderComposite() {
       if (!this.originalTexture) return;
       const gl = this.gl;
@@ -276,6 +338,11 @@ export class WebGl2Backend {
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
+  /**
+   * Reads the probability map back to the CPU as `numColors` channels per pixel,
+   * packed sequentially.
+   * @returns {Promise<Float32Array>} width*height*numColors probabilities.
+   */
   async downloadProbabilities() {
       const gl = this.gl;
       const pixels = new Float32Array(this.width * this.height * 4);
@@ -351,10 +418,18 @@ export class WebGl2Backend {
       this.denseStats = accumulateStats(this.labels, intensity, this.width, this.height);
   }
 
+  /**
+   * Returns the dense 7-field-per-object stats from the last computeStats call
+   * (empty if none). @returns {Promise<Uint32Array>}
+   */
   async downloadStats() {
       return this.denseStats ?? new Uint32Array(0);
   }
 
+  /**
+   * Returns a copy of the last computed component labels (one u32 per pixel;
+   * zeros if none computed yet). @returns {Promise<Uint32Array>}
+   */
   async downloadLabels() {
       return this.labels ? this.labels.slice() : new Uint32Array(this.width * this.height);
   }
@@ -404,6 +479,7 @@ export class WebGl2Backend {
       return fbo;
   }
 
+  /** Frees all GPU textures, framebuffers, programs, and the quad VAO. */
   destroy() {
       const gl = this.gl;
       if (!gl) return;
@@ -562,7 +638,10 @@ export function accumulateStats(labels, intensity, width, height) {
     return out;
 }
 
-// Keep the exact same gaussian_kernel JS function here.
+// 1D Gaussian kernel (or its 1st/2nd analytical derivative), returned as the
+// right half [0..radius]. Kept byte-for-byte identical to gaussian_kernel in
+// webgpu.js so both backends produce the same features; see that copy for the
+// fully-documented version.
 function gaussian_kernel(scale, order = 0) {
 if (scale <= 0) throw new Error("scale should be greater than 0");
 const radius = Math.ceil((3.0 + 0.5 * order) * scale);

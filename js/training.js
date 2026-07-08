@@ -1,4 +1,4 @@
-import { MIN_LABELS_TO_TRAIN, RF_CONFIG, TRAIN_DEBOUNCE_MS } from './config.js';
+import { MIN_LABELS_TO_TRAIN, NUM_FEATURES, RF_CONFIG, TRAIN_DEBOUNCE_MS } from './config.js';
 import { updateClassStatBadges } from './ui.js';
 
 // Fields per object in the dense stats struct backends return from downloadStats:
@@ -45,11 +45,22 @@ async function buildTrainingDataset(images, totalLabels) {
 }
 
 let _trainTimer = null;
+/**
+ * Debounced trigger for a full retrain. Coalesces rapid label edits into a
+ * single trainAndPredictAll call after TRAIN_DEBOUNCE_MS of quiet.
+ * @param {Object} state - Shared app state.
+ */
 export function scheduleTraining(state) {
     clearTimeout(_trainTimer);
     _trainTimer = setTimeout(() => trainAndPredictAll(state), TRAIN_DEBOUNCE_MS);
 }
 
+/**
+ * Retrains the forest on all current labels, then runs inference on every image
+ * and refreshes the per-class object counts. No-ops (and zeroes the badges) if
+ * there are fewer than MIN_LABELS_TO_TRAIN labels total.
+ * @param {Object} state - Shared app state; reads state.images and mutates state.rf.
+ */
 export async function trainAndPredictAll(state) {
     const totalLabels = state.images.reduce((s, i) => s + i.labels.length, 0);
     if (totalLabels < MIN_LABELS_TO_TRAIN) {
@@ -58,7 +69,7 @@ export async function trainAndPredictAll(state) {
     }
 
     const { combinedX, yArray } = await buildTrainingDataset(state.images, totalLabels);
-    state.rf.train(combinedX, yArray, RF_CONFIG.numTrees);
+    state.rf.train(combinedX, yArray, NUM_FEATURES);
 
     for (const img of state.images) {
         await img.backend.runInference(state.rf);
@@ -67,7 +78,12 @@ export async function trainAndPredictAll(state) {
     await updateObjectCounts(state);
 }
 
-// Runs connected-component labeling + stats per class, per image, and pushes the summed object counts into the class-selector badges.
+/**
+ * Runs connected-component labeling + stats per class, per image, and pushes the
+ * summed object counts into the class-selector badges. Each object is one dense
+ * stats struct, so the count is stats.length / STATS_FIELDS_PER_OBJECT.
+ * @param {Object} state - Shared app state.
+ */
 async function updateObjectCounts(state) {
     const numClasses = RF_CONFIG.numClasses;
     const counts = new Array(numClasses).fill(0);

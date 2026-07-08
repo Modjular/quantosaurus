@@ -1,3 +1,20 @@
+/**
+ * WebGPU compute/render backend — the preferred path. Interchangeable with
+ * WebGl2Backend; both expose the same interface used by the image lifecycle and
+ * training code:
+ *
+ *   initialize, allocateImage, updateFeatures, downloadFeatures,
+ *   gatherFeaturesForTraining, runInference, renderComposite,
+ *   downloadProbabilities, computeConnectedComponents, computeStats,
+ *   downloadStats, downloadLabels, destroy.
+ *
+ * Everything runs on-GPU via compute shaders: a separable Gaussian-derivative
+ * filter bank produces 8 per-pixel features; a Random Forest pass turns them
+ * into per-class probabilities; connected-component labeling uses an atomic
+ * parallel union-find; a stats pass accumulates per-object metrics and compacts
+ * them; a render pass composites the argmax overlay. Data is only read back to
+ * the CPU on demand through the download* methods.
+ */
 export class WebGpuBackend {
     constructor(labelColors) {
         this.device = null;
@@ -19,6 +36,12 @@ export class WebGpuBackend {
         ];
     }
 
+    /**
+     * Requests the GPU adapter/device (raising buffer-size limits to the
+     * adapter maximum) and configures the canvas context.
+     * @param {HTMLCanvasElement} canvas
+     * @throws If WebGPU is unavailable.
+     */
     async initialize(canvas) {
         if (!navigator.gpu) throw new Error("WebGPU not supported");
         const adapter = await navigator.gpu.requestAdapter();
@@ -81,6 +104,15 @@ export class WebGpuBackend {
         return data;
     }
 
+    /**
+     * (Re)allocates the per-image GPU resources (original texture, probability
+     * and label buffers), freeing any previous ones, and seeds probabilities to
+     * -1 (the "unclassified" sentinel). Feature/stats buffers are cleared and
+     * rebuilt lazily on the next updateFeatures/computeStats.
+     * @param {number} width
+     * @param {number} height
+     * @param {Uint8Array|Uint8ClampedArray} rgbaData - Source RGBA pixels.
+     */
     async allocateImage(width, height, rgbaData) {
         this.width = width;
         this.height = height;
@@ -115,6 +147,12 @@ export class WebGpuBackend {
         if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
     }
 
+    /**
+     * Recomputes the persistent feature buffer for the given intensity image at
+     * the given sigma, then repaints the composite view.
+     * @param {Float32Array} intensityArray - Normalized single-channel intensities.
+     * @param {number} sigma - Gaussian scale for the filter bank.
+     */
     async updateFeatures(intensityArray, sigma) {
         if (this.featureBuffer) this.featureBuffer.destroy();
         this.featureBuffer = await this._extractFeatures(intensityArray, sigma);
@@ -295,6 +333,12 @@ export class WebGpuBackend {
         this.statsCounterBuffer = counterBuffer;
     }
 
+    /**
+     * Reads back the compacted per-object stats from the last computeStats call
+     * as dense 7-field structs (label, area, total_intensity, sum_x, sum_y, min,
+     * max). Empty if no objects were found.
+     * @returns {Promise<Uint32Array>}
+     */
     async downloadStats() {
         const counterData = await this._readBuffer(this.statsCounterBuffer, 4, Uint32Array);
         const numObjects = counterData[0];
@@ -309,7 +353,8 @@ export class WebGpuBackend {
     }
 
     /**
-     * Downloads computed features back to system RAM.
+     * Reads back the connected-component labels (one u32 per pixel; 0 = background).
+     * @returns {Promise<Uint32Array>}
      */
     async downloadLabels() {
         const outSize = this.width * this.height;
@@ -498,6 +543,13 @@ export class WebGpuBackend {
         return gpuOutput;
     }
 
+    /**
+     * Computes features and reads all 8 channels back to the CPU, interleaved as
+     * `[f0..f7]` per pixel.
+     * @param {Float32Array} intensityArray
+     * @param {number} scale - Gaussian sigma.
+     * @returns {Promise<Float32Array>} width*height*8 features.
+     */
     async downloadFeatures(intensityArray, scale) {
         const gpuOutput = await this._extractFeatures(intensityArray, scale);
         const outSize = 8 * this.width * this.height;
@@ -506,6 +558,13 @@ export class WebGpuBackend {
         return res;
     }
 
+    /**
+     * Gathers the 8-feature vectors for a set of labeled pixels (via a compute
+     * scatter/gather pass) to feed FlatRandomForest.train. Returns them
+     * row-major as `numLabels * 8` floats.
+     * @param {Uint32Array} indicesArray - Flat pixel indices (y * width + x).
+     * @returns {Promise<Float32Array>} Features for each labeled pixel.
+     */
     async gatherFeaturesForTraining(indicesArray) {
         const numLabels = indicesArray.length;
         const indicesBuffer = this.device.createBuffer({
@@ -541,6 +600,14 @@ export class WebGpuBackend {
         return features;
     }
 
+    /**
+     * Runs the trained forest over every pixel, writing per-class probabilities
+     * into a fresh probability buffer, then repaints the composite. Tree roots,
+     * tree count, and max depth are passed as uniform metadata (see the fix
+     * notes below for the sentinel/normalization pitfalls this handles).
+     * @param {FlatRandomForest} rf - A trained forest (max 8 trees).
+     * @throws If the forest has more than 8 trees.
+     */
     async runInference(rf) {
         const forestBuffer = this.device.createBuffer({
             size: rf.forestBuffer.byteLength,
@@ -615,6 +682,7 @@ export class WebGpuBackend {
         this.renderComposite();
     }
 
+    /** Paints the canvas: the original image with the argmax class overlaid where classified. */
     renderComposite() {
         if (!this.originalTexture || !this.probBuffer) return;
 
@@ -659,12 +727,18 @@ export class WebGpuBackend {
         this.device.queue.submit([enc.finish()]);
     }
 
+    /**
+     * Reads the probability buffer back to the CPU as `numColors` channels per
+     * pixel, packed sequentially.
+     * @returns {Promise<Float32Array>} width*height*numColors probabilities.
+     */
     async downloadProbabilities() {
         const numColors = this.labelColors.length;
         const outSize = this.width * this.height * numColors;
         return this._readBuffer(this.probBuffer, outSize * 4, Float32Array);
     }
 
+    /** Frees all GPU textures and buffers held by this backend. */
     destroy() {
         if (this.originalTexture)    { this.originalTexture.destroy();    this.originalTexture = null; }
         if (this.featureBuffer)      { this.featureBuffer.destroy();      this.featureBuffer = null; }

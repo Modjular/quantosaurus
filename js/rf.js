@@ -1,15 +1,27 @@
 /**
- * Trains a Random Forest that maps features directly into a flat array structure
- * optimized for WebGPU Storage Buffers.
- * * WEBGPU STRUCT MIRROR:
- * struct Node {
- * feature_index: i32,  // If >= 0, check this feature index. If -1, this is a leaf.
- * threshold: f32,      // Split value
- * left_child: i32,     // Array index of left node
- * right_child: i32,    // Array index or negative representation of Leaf Class ID
- * };
+ * A CPU-trained Random Forest whose nodes are packed into a single flat buffer
+ * laid out for direct upload to a GPU storage buffer. Each node occupies 4
+ * slots; the buffer is viewed as both Int32Array and Float32Array over the same
+ * ArrayBuffer, since the slots mix integer and float fields.
+ *
+ * Per-node slot layout (mirrored by the inference shaders in both backends):
+ *   slot 0  feature_index (i32)  — feature to test; -1 marks a leaf
+ *   slot 1  threshold     (f32)  — split value (unused on leaves)
+ *   slot 2  left_child    (i32)  — array index of the left node (unused on leaves)
+ *   slot 3  right_child   (i32)  — array index of the right node, OR on a leaf the
+ *                                  encoded class id: right_child = -(classId + 1)
+ *
+ * `treeRoots` holds each tree's starting node index within the shared buffer.
  */
 export class FlatRandomForest {
+  /**
+   * @param {Object} [options]
+   * @param {number} [options.numTrees=10] - Trees in the forest. numTrees === 1
+   *   takes a deterministic path (all samples, in order, no bootstrap).
+   * @param {number} [options.maxDepth=10] - Maximum depth per tree.
+   * @param {number} [options.minSamplesSplit=2] - Minimum samples required to split a node.
+   * @param {number} [options.numClasses=2] - Number of class labels.
+   */
   constructor(options = {}) {
     this.numTrees = options.numTrees || 10;
     this.maxDepth = options.maxDepth || 10;
@@ -21,7 +33,12 @@ export class FlatRandomForest {
   }
 
   /**
-   * Train the model on sparse painted coordinate features.
+   * Trains the forest and packs it into `this.forestBuffer` / `this.treeRoots`.
+   * @param {Float32Array} X - Row-major feature matrix; sample i, feature f lives
+   *   at `X[i * numFeatures + f]`.
+   * @param {Int32Array|Array<number>} y - Class label per sample.
+   * @param {number} numFeatures - Features per sample (the row stride of X).
+   * @throws If `y` is empty (no labeled samples to train on).
    */
   train(X, y, numFeatures) {
     if (!y || y.length === 0) {
@@ -206,6 +223,13 @@ export class FlatRandomForest {
     return majorityClass;
   }
 
+  /**
+   * Classifies one feature vector by majority vote across all trees.
+   * The CPU reference for the GPU inference shaders; walks the flat buffer using
+   * the same node layout and leaf encoding they do.
+   * @param {ArrayLike<number>} features - One feature vector (length numFeatures).
+   * @returns {number} The winning class index.
+   */
   predictSingle(features) {
     const classVotes = new Float32Array(this.numClasses);
     const i32Forest = new Int32Array(this.forestBuffer.buffer, this.forestBuffer.byteOffset, this.forestBuffer.length);
