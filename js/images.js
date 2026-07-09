@@ -156,28 +156,38 @@ export async function addImage(state, file) {
     };
     state.images.push(imgState);
 
-    labelCanvas.addEventListener('mousedown', (e) => {
+    // Pointer events unify mouse/touch/pen. Only the primary pointer paints
+    // (the first touch contact, or the mouse) — a second simultaneous touch is
+    // always a pinch/pan gesture (see camera.js), never a second brush.
+    labelCanvas.addEventListener('pointerdown', (e) => {
+        if (!e.isPrimary) return;
         if (state.isSpaceDown || state.toolMode === 'grab') return;
+        labelCanvas.setPointerCapture(e.pointerId);
         imgState._cachedRect = labelCanvas.getBoundingClientRect();
         state.isDrawing    = true;
         state.activeImageId = imgId;
         const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
         paint(state, imgState, e, radius);
     });
-    labelCanvas.addEventListener('mousemove', (e) => {
-        if (state.isSpaceDown) return
+    labelCanvas.addEventListener('pointermove', (e) => {
+        if (!e.isPrimary) return;
+        if (state.isSpaceDown) return;
+        if (state.activePointerCount > 1) return; // a second finger joined — pause the stroke
         if (state.isDrawing && state.activeImageId === imgId && state.toolMode !== 'grab') {
             const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
             paint(state, imgState, e, radius);
         }
     });
-    labelCanvas.addEventListener('mouseup', () => {
+    function endStroke(e) {
+        if (!e.isPrimary) return;
         if (state.activeImageId === imgId) {
             state.isDrawing    = false;
             state.activeImageId = null;
             scheduleTraining(state);
         }
-    });
+    }
+    labelCanvas.addEventListener('pointerup', endStroke);
+    labelCanvas.addEventListener('pointercancel', endStroke);
 
     const ro = new ResizeObserver(() => { imgState._cachedRect = null; });
     ro.observe(labelCanvas);
@@ -292,12 +302,12 @@ function getPixelsInRadius(cx, cy, radius, width, height) {
 }
 
 /**
- * Applies the active brush at a mouse event's location: maps client coords to
+ * Applies the active brush at a pointer event's location: maps client coords to
  * image pixels, paints or erases the brush footprint on the label canvas, and
  * updates imgState.labels accordingly (dropping any labels the brush overwrites).
  * @param {Object} state - Shared app state; reads toolMode, currentClass, labelColors.
  * @param {Object} imgState - The target image's state entry.
- * @param {MouseEvent} e - The triggering mouse event.
+ * @param {PointerEvent} e - The triggering pointer event (mouse, touch, or pen).
  */
 /**
  * Redraws every painted pixel on an image's label canvas using the current
