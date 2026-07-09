@@ -81,7 +81,6 @@ body.theme-light {
 }
 /* Fix subtle button contrast in light mode */
 body.theme-light .btn-subtle { color: var(--text-main); }
-body.theme-light .class-stat-badge { background: rgba(51, 48, 42, 0.08); }
 
 
 /* ── Layout & Structure ───────────────────────────────────────────── */
@@ -444,16 +443,22 @@ button:disabled {
     outline: 1px solid var(--accent-primary);
     outline-offset: 1px;
 }
-.class-stat-badge {
+/* The object count gets its own emphasized, class-colored circle — background and
+   text color are set inline per class by setClassCountColor (js/ui.js). */
+.class-count-circle {
     margin-left: auto;
-    font-size: 11px;
-    color: #888;
-    background: rgba(0,0,0,0.05);
-    padding: 2px 6px;
-    border-radius: 10px;
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-family: monospace;
-    min-width: 14px;
-    text-align: center;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 /* ── Composite Structural Panels ──────────────────────────────────── */
@@ -630,6 +635,12 @@ canvas {
 .label-canvas {
     z-index: 2;
     cursor: crosshair;
+}
+.overlay-canvas {
+    /* Centroid markers, above the brush layer; never intercepts painting so
+       pointer events fall through to the label canvas below. */
+    z-index: 3;
+    pointer-events: none;
 }
 
 /* Dynamic Interactivity states */

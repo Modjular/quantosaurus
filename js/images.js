@@ -1,4 +1,4 @@
-import { RF_CONFIG } from './config.js';
+import { RF_CONFIG, CENTROID_OVERLAY } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
@@ -113,12 +113,20 @@ export async function addImage(state, file) {
     labelCanvas.className = 'label-canvas';
     labelCanvas.width = w; labelCanvas.height = h;
 
+    // Centroid markers layer: same w×h backing store as the others so it aligns
+    // 1:1 in image-pixel space. Sits above the label canvas with pointer-events
+    // disabled (see .overlay-canvas in style.css) so it never intercepts painting.
+    const overlayCanvas = document.createElement('canvas');
+    overlayCanvas.className = 'overlay-canvas';
+    overlayCanvas.width = w; overlayCanvas.height = h;
+
     const tileLabel = document.createElement('div');
     tileLabel.className   = 'image-tile-label';
     tileLabel.textContent = `${file.name} ${w}x${h}`;
 
     container.appendChild(gpuCanvas);
     container.appendChild(labelCanvas);
+    container.appendChild(overlayCanvas);
     container.appendChild(tileLabel);
     document.getElementById('canvas-board').appendChild(container);
 
@@ -150,7 +158,7 @@ export async function addImage(state, file) {
         windowLo: range.dataMin,
         windowHi: range.dataMax,
         labels: [],
-        gpuCanvas, labelCanvas, container,
+        gpuCanvas, labelCanvas, overlayCanvas, container,
         _cachedRect: null,
         _sidebarRow: row,
     };
@@ -324,6 +332,51 @@ export function redrawLabels(state, imgState) {
         ctx.fillStyle = state.labelColors[lbl.cls] ?? state.labelColors[0];
         ctx.fillRect(lbl.x, lbl.y, 1, 1);
     }
+}
+
+/**
+ * Redraws the centroid-marker overlay for one image: a class-colored circle over
+ * each detected object's centroid, sized by area on a log scale (CENTROID_OVERLAY).
+ * Fully clears and repaints, so passing empty per-class lists effectively clears it.
+ * @param {Object} state - Shared app state; reads labelColors.
+ * @param {Object} imgState - The target image's state entry.
+ * @param {Array<Array<{cx: number, cy: number, area: number}>>} objectsByClass -
+ *   Detected objects grouped by class index; each object carries its centroid and area.
+ */
+export function drawCentroids(state, imgState, objectsByClass) {
+    // Cache the detected objects so a live color change can repaint the markers
+    // without waiting for the next retrain (mirrors redrawLabels for the brush layer).
+    imgState._centroids = objectsByClass;
+    const ctx = imgState.overlayCanvas.getContext('2d');
+    ctx.clearRect(0, 0, imgState.width, imgState.height);
+    for (let cls = 0; cls < objectsByClass.length; cls++) {
+        const objs = objectsByClass[cls];
+        if (!objs?.length) continue;
+        const color = state.labelColors[cls] ?? state.labelColors[0];
+        for (const o of objs) {
+            const r = CENTROID_OVERLAY.minRadius + CENTROID_OVERLAY.logScale * Math.log(o.area);
+            ctx.beginPath();
+            ctx.arc(o.cx, o.cy, r, 0, Math.PI * 2);
+            // Dark halo first, then the class-color ring on top — keeps the marker
+            // legible even over a composite region tinted in the same class color.
+            ctx.lineWidth   = CENTROID_OVERLAY.lineWidth * 2;
+            ctx.strokeStyle = `rgba(0,0,0,${CENTROID_OVERLAY.haloAlpha})`;
+            ctx.stroke();
+            ctx.lineWidth   = CENTROID_OVERLAY.lineWidth;
+            ctx.strokeStyle = color;
+            ctx.stroke();
+        }
+    }
+}
+
+/**
+ * Clears an image's centroid-marker overlay. Used when there aren't enough labels
+ * to train, so stale markers from a previous forest don't linger.
+ * @param {Object} imgState - The target image's state entry.
+ */
+export function clearCentroids(imgState) {
+    imgState._centroids = null;
+    imgState.overlayCanvas.getContext('2d').clearRect(0, 0, imgState.width, imgState.height);
 }
 
 export function paint(state, imgState, e, radius) {

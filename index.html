@@ -222,11 +222,12 @@
 </div>
 <script type="module">
     import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
-    import { addFiles, redrawLabels } from './js/images.js';
+    import { addFiles, redrawLabels, drawCentroids } from './js/images.js';
     import { zipImages } from './js/export.js';
     import { setupCamera } from './js/camera.js';
     import { FlatRandomForest } from './js/rf.js';
     import { scheduleTraining } from './js/training.js'
+    import { setClassCountColor } from './js/ui.js';
     import { loadSettings, saveSettings } from './js/settings.js';
 
     const state = {
@@ -466,7 +467,7 @@
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
                 <span contenteditable data-class="${index}"></span>
-                <div class="class-stat-badge" id="stat-class-${index}">0</div>
+                <div class="class-count-circle" id="stat-class-${index}">0</div>
             </div>
         `;
             }).join('');
@@ -476,6 +477,12 @@
         document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
             span.textContent = state.classNames[parseInt(span.dataset.class, 10)];
         });
+
+        // Tint each class's count circle with its overlay color (contrasting text
+        // picked by luminance), matching the markers drawn over each object.
+        for (let i = 0; i < state.rf.numClasses; i++) {
+            setClassCountColor(i, state.labelColors[i] ?? '#888888');
+        }
 
         // Class selector interaction
         function selectClass(index) {
@@ -511,9 +518,12 @@
             input.oninput = (e) => {
                 const idx = parseInt(input.dataset.class, 10);
                 state.labelColors[idx] = e.target.value;
+                setClassCountColor(idx, e.target.value);
                 state.images.forEach(img => {
                     img.backend.setColors(state.labelColors);
                     redrawLabels(state, img);
+                    // Repaint cached centroid markers so they recolor live too.
+                    if (img._centroids) drawCentroids(state, img, img._centroids);
                 });
                 saveSettings(state);
             };

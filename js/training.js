@@ -1,10 +1,35 @@
 import { MIN_LABELS_TO_TRAIN, NUM_FEATURES, RF_CONFIG, TRAIN_DEBOUNCE_MS, STATS_LAYOUT } from './config.js';
 import { updateClassStatBadges } from './ui.js';
+import { drawCentroids, clearCentroids } from './images.js';
 
 // Fields per object in the dense stats struct backends return from downloadStats
 // (see STATS_LAYOUT): label, area, total_intensity {lo,hi}, sum_x {lo,hi},
 // sum_y {lo,hi}, min_intensity, max_intensity.
 const STATS_FIELDS_PER_OBJECT = STATS_LAYOUT.denseCount;
+
+/**
+ * Decodes a dense stats buffer (downloadStats) into per-object centroids + areas.
+ * The 64-bit summed x/y are split across lo/hi u32 words (see STATS_LAYOUT); we
+ * reassemble them and divide by area for the centroid. Centroids are pixel
+ * coordinates and need no range.scale descaling (only intensity fields do).
+ * @param {Uint32Array} stats - Flat dense stats, STATS_FIELDS_PER_OBJECT u32 per object.
+ * @returns {Array<{cx: number, cy: number, area: number}>}
+ */
+export function decodeObjects(stats) {
+    const n = STATS_FIELDS_PER_OBJECT;
+    const u64 = (lo, hi) => hi * 2 ** 32 + lo;
+    const out = [];
+    for (let i = 0; i < stats.length; i += n) {
+        const area = stats[i + 1];
+        if (area === 0) continue;
+        out.push({
+            cx: u64(stats[i + 4], stats[i + 5]) / area,
+            cy: u64(stats[i + 6], stats[i + 7]) / area,
+            area,
+        });
+    }
+    return out;
+}
 
 /**
  * Aggregates features and labels across all images into 1D typed arrays for Random Forest training.
@@ -66,6 +91,7 @@ export async function trainAndPredictAll(state) {
     const totalLabels = state.images.reduce((s, i) => s + i.labels.length, 0);
     if (totalLabels < MIN_LABELS_TO_TRAIN) {
         updateClassStatBadges(new Array(RF_CONFIG.numClasses).fill(0));
+        state.images.forEach(clearCentroids);
         return;
     }
 
@@ -90,6 +116,7 @@ async function updateObjectCounts(state) {
     const counts = new Array(numClasses).fill(0);
 
     for (const img of state.images) {
+        const objectsByClass = Array.from({ length: numClasses }, () => []);
         for (let cls = 0; cls < numClasses; cls++) {
             await img.backend.computeConnectedComponents(cls);
             const statsResult = await img.backend.computeStats();
@@ -100,8 +127,12 @@ async function updateObjectCounts(state) {
             if (statsResult === null) continue;
 
             const stats = await img.backend.downloadStats();
-            counts[cls] += stats.length / STATS_FIELDS_PER_OBJECT;
+            const objects = decodeObjects(stats);
+            objectsByClass[cls] = objects;
+            counts[cls] += objects.length;
         }
+        // Repaint this image's centroid markers from the freshly detected objects.
+        drawCentroids(state, img, objectsByClass);
     }
 
     updateClassStatBadges(counts);
