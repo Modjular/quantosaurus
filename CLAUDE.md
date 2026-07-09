@@ -68,7 +68,7 @@ new callers should only depend on this shared surface:
 ```
 initialize, allocateImage, updateFeatures, downloadFeatures, gatherFeaturesForTraining,
 runInference, renderComposite, downloadProbabilities, computeConnectedComponents,
-computeStats, downloadStats, downloadLabels, setWindow, destroy
+computeStats, downloadStats, downloadLabels, setWindow, setColors, destroy
 ```
 
 Each backend, per image, runs entirely on-GPU: a separable Gaussian-derivative filter bank produces

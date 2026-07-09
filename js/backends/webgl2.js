@@ -6,7 +6,7 @@
  *   initialize, allocateImage, updateFeatures, downloadFeatures,
  *   gatherFeaturesForTraining, runInference, renderComposite,
  *   downloadProbabilities, computeConnectedComponents, computeStats,
- *   downloadStats, downloadLabels, destroy.
+ *   downloadStats, downloadLabels, setWindow, setColors, destroy.
  *
  * Pipeline: a separable Gaussian-derivative filter bank (two fragment passes,
  * horizontal then vertical) writes 8 per-pixel features across two RGBA float
@@ -53,6 +53,10 @@ export class WebGl2Backend {
           'rgba(0,255,0,1.0)',
           'rgba(0,0,255,1.0)',
       ];
+      // Per-class overlay colors packed as a flat rgba (0–1) Float32Array, uploaded
+      // to the composite pass as the u_colors uniform. Recoloring a class only
+      // repacks this + repaints (see setColors) — no shader recompile.
+      this._colorData = null;
 
       // Shader Programs
       this.progHoriz = null;
@@ -356,6 +360,7 @@ export class WebGl2Backend {
       gl.uniform1i(gl.getUniformLocation(this.progComposite, "u_probs"), 1);
       gl.uniform1f(gl.getUniformLocation(this.progComposite, "u_winLo"), this.windowLo);
       gl.uniform1f(gl.getUniformLocation(this.progComposite, "u_winHi"), this.windowHi);
+      gl.uniform4fv(gl.getUniformLocation(this.progComposite, "u_colors"), this._colorData);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
@@ -371,6 +376,23 @@ export class WebGl2Backend {
   setWindow(lo, hi) {
       this.windowLo = lo;
       this.windowHi = hi;
+      this.renderComposite();
+  }
+
+  /**
+   * Updates the per-class overlay colors and repaints. Only repacks the u_colors
+   * uniform and re-records the draw with the existing program — no shader
+   * recompile — so a color edit is cheap. Recolors the classes the image was
+   * allocated with (the class *count* is fixed for the image's lifetime); any
+   * extra entries in `colors` are ignored, and any missing ones leave that class's
+   * current color unchanged.
+   * @param {string[]} colors - CSS color strings indexed by class.
+   */
+  setColors(colors) {
+      for (let i = 0; i < this.labelColors.length && i < colors.length; i++) {
+          this.labelColors[i] = colors[i];
+      }
+      this._colorData = packColors(this.labelColors);
       this.renderComposite();
   }
 
@@ -547,21 +569,21 @@ export class WebGl2Backend {
       const numColors = this.labelColors.length;
       this.progRF = createProgram(FS_RF_INFERENCE.replace(/{{NUM_COLORS}}/g, numColors));
 
-      const colorsGLSL = this.labelColors.map(parseColorToGLSL).join(',\n    ');
-      this.progComposite = createProgram(FS_COMPOSITE
-          .replace(/{{NUM_COLORS}}/g, numColors)
-          .replace(/{{COLORS_ARRAY}}/g, colorsGLSL));
+      this.progComposite = createProgram(FS_COMPOSITE.replace(/{{NUM_COLORS}}/g, numColors));
+      this._colorData = packColors(this.labelColors);
   }
 }
 
 /**
- * Converts any valid CSS color string (hex3/6/8, rgb/rgba, hsl/hsla, named
- * colors, etc.) into a GLSL vec4 literal, by letting the browser's own CSS
- * color parser do the work via a 1x1 canvas instead of hand-rolled regex.
- * Mirrors parseColorToWGSL in webgpu.js.
+ * Parses any valid CSS color string (hex3/6/8, rgb/rgba, hsl/hsla, named colors,
+ * etc.) into normalized [r, g, b, a] floats in 0–1, by letting the browser's own
+ * CSS color parser do the work via a 1x1 canvas instead of hand-rolled regex.
+ * Mirrors parseColorToRGBA in webgpu.js.
+ * @param {string} colorStr - Any CSS color string.
+ * @returns {[number, number, number, number]} rgba components in 0–1.
  */
 let _colorParseCtx = null;
-function parseColorToGLSL(colorStr) {
+function parseColorToRGBA(colorStr) {
     if (!_colorParseCtx) {
         const canvas = document.createElement('canvas');
         canvas.width = 1;
@@ -574,7 +596,25 @@ function parseColorToGLSL(colorStr) {
     ctx.clearRect(0, 0, 1, 1);
     ctx.fillRect(0, 0, 1, 1);
     const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
-    return `vec4(${(r / 255).toFixed(3)}, ${(g / 255).toFixed(3)}, ${(b / 255).toFixed(3)}, ${(a / 255).toFixed(3)})`;
+    return [r / 255, g / 255, b / 255, a / 255];
+}
+
+/**
+ * Packs an array of CSS color strings into a flat rgba (0–1) Float32Array — one
+ * vec4 per class — for upload as the composite pass's u_colors uniform.
+ * @param {string[]} colors - CSS color strings indexed by class.
+ * @returns {Float32Array} length colors.length * 4.
+ */
+function packColors(colors) {
+    const data = new Float32Array(colors.length * 4);
+    for (let i = 0; i < colors.length; i++) {
+        const [r, g, b, a] = parseColorToRGBA(colors[i]);
+        data[i * 4 + 0] = r;
+        data[i * 4 + 1] = g;
+        data[i * 4 + 2] = b;
+        data[i * 4 + 3] = a;
+    }
+    return data;
 }
 
 /**
@@ -904,6 +944,9 @@ uniform sampler2D u_original; // R32F raw intensity in the red channel
 uniform sampler2D u_probs;
 uniform float u_winLo; // display contrast black point (raw intensity units)
 uniform float u_winHi; // display contrast white point (raw intensity units)
+// Per-class overlay colors as a uniform (not baked shader constants) so recoloring
+// a class only needs a uniform4fv upload, not a shader recompile (see setColors).
+uniform vec4 u_colors[{{NUM_COLORS}}];
 
 out vec4 fragColor;
 
@@ -932,14 +975,10 @@ void main() {
       fragColor = vec4(raw.rgb, 1.0);
       return;
   }
-  
-  vec4 colors[{{NUM_COLORS}}] = vec4[](
-      {{COLORS_ARRAY}}
-  );
 
   vec4 overlay = vec4(0.0, 0.0, 0.0, alpha);
   if (best_class >= 0 && best_class < {{NUM_COLORS}}) {
-      overlay = colors[best_class];
+      overlay = u_colors[best_class];
       overlay.a = alpha;
   }
 

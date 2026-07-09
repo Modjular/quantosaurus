@@ -121,7 +121,7 @@
 
 </div>
 <script type="module">
-    import { LABEL_COLORS, RF_CONFIG } from './js/config.js'
+    import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
     import { addFiles } from './js/images.js';
     import { zipImages } from './js/export.js';
     import { setupCamera } from './js/camera.js';
@@ -134,6 +134,11 @@
 
         // ML
         rf: new FlatRandomForest(RF_CONFIG),
+
+        // Presentation — per-class overlay colors, indexed by class. Owned by the
+        // UI (mutable), seeded from config defaults. The class *count* comes from
+        // rf.numClasses; colors are a separate concern that can change at runtime.
+        labelColors: [...DEFAULT_LABEL_COLORS],
 
         // Drawing / Tools
         currentClass: 0,
@@ -307,15 +312,20 @@
             };
         });
 
-        // TODO: Use state.rf.numColors as source of truth instead
-        // Setup class selector with stat badges
-        document.querySelector('.class-selector').innerHTML = LABEL_COLORS.map((color, index) => `
+        // Setup class selector with stat badges. The forest owns the class count
+        // (rf.numClasses); colors come from the mutable state.labelColors palette,
+        // falling back to neutral gray if fewer colors than classes are defined.
+        document.querySelector('.class-selector').innerHTML =
+            Array.from({ length: state.rf.numClasses }, (_, index) => {
+                const color = state.labelColors[index] ?? '#888888';
+                return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <div class="color-box" style="background:${color};"></div>
                 <span contenteditable>Class ${index + 1}</span>
                 <div class="class-stat-badge" id="stat-class-${index}">0</div>
             </div>
-        `).join('');
+        `;
+            }).join('');
 
         // Class selector interaction
         document.querySelectorAll('.class-item').forEach(el => {
