@@ -1,4 +1,4 @@
-<img width="1204" height="805" alt="Screenshot 2026-07-08 at 1 34 15 PM" src="https://github.com/user-attachments/assets/549f7c67-51da-448c-b92d-bc6323660ba3" />
+<img width="100%" alt="quantosaurus_demo1" src="https://github.com/user-attachments/assets/1518774f-786f-4226-bfd7-e5054a0b07df" />
 
 
 # 🦖 Quantosaurus
@@ -10,7 +10,7 @@ Use Quantosaurus only after you've tried ImageJ's threshold tool, but before you
 
 
 ### Why
-When a friend needed help counting cells in her lab, I couldn't find any online, simple, accessible tools. At the same time, I wanted to learn more about WebGPU by using it for a non-trivial task like pixel-classification.
+A friend needed help counting cells in her lab but I couldn't find any browser-based tools to send her. At the same time, I wanted to learn more about WebGPU by using it for a non-trivial task like pixel-classification. Quantosaurus is the result of many attempts and half-baked ideas finally coming together.
 
 
 ### Features
