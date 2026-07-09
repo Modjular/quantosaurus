@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Quantosaurus</title>
+    <meta name="description" content="A free, fast, completely client-side web tool for counting cells and biological image analysis. Train a lightweight model directly in your browser.">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%22100%22>🦖</text></svg>">
     <link rel="stylesheet" href="style.css">
 </head>
@@ -13,6 +14,7 @@
     <h2>🦖 Quantosaurus</h2>
     <div id="status">No images loaded. Drag &amp; drop onto the canvas.</div>
     <div style="flex: 1;"></div>
+    <button id="btnCheatsheet" class="btn-subtle">❓&nbsp;&nbsp;Cheatsheet</button>
     <button id="btnThemeToggle" class="btn-subtle">☀️&nbsp;&nbsp;Light Mode</button>
     <button id="btnFeedback" class="btn-subtle">💬&nbsp;&nbsp;Feedback</button>
 </div>
@@ -34,6 +36,104 @@
         <div style="display:flex; justify-content:flex-end; gap:8px;">
             <button id="btnSubmitFeedback" class="btn-primary" style="padding: 6px 12px;">Submit</button>
         </div>
+    </div>
+</div>
+
+<div id="cheatsheetModal" class="modal-overlay" style="display: none;">
+    <div class="cheatsheet-paper">
+        
+        <div class="cs-header">
+            <div>
+                <h1 style="margin: 0; font-size: 24px;">Welcome to Quantosaurus 🦖</h1>
+                <p style="margin: 4px 0 0 0; color: var(--text-muted); font-size: 14px;">
+                  A free, <a href="https://github.com/Modjular/quantosaurus" target="_blank">open-source</a>, browser-based cell counter.
+                </p>
+            </div>
+            <div class="cs-header-actions">
+                <button id="btnPrintCheatsheet" class="btn-subtle" style="padding: 4px 10px; font-size: 12px;">🖨️&nbsp;&nbsp;Print</button>
+                <button id="btnCloseCheatsheet" class="btn-close-cs" title="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="cs-intro-grid">
+            <div class="cs-what-is-it">
+                <h3>What is it?</h3>
+                <p>Quantosaurus is a free, <strong>browser-based cell counter</strong> designed for rapid <strong>biological image analysis</strong>. It leverages <strong>interactive pixel classification</strong>—allowing you to train a lightweight machine learning model simply by painting on the canvas. It serves as a rapid, <strong>no-code cell counting</strong> tool that works beautifully for everything from <strong>Brightfield cell counting</strong> to fluorescence and <strong>DAPI cell counting</strong>.</p>
+            </div>
+
+            <div class="cs-privacy-banner">
+                <strong>🔒 Local & Private</strong>
+                <p style="margin: 6px 0 0 0;">Your images never leave your computer. All processing happens entirely client-side. No patient data or proprietary lab images are ever uploaded to a server.</p>
+            </div>
+        </div>
+
+        <div class="cs-section">
+            <h3>When to use Quantosaurus?</h3>
+            <p>Don't reach immediately for Quantosaurus; use the right tool for the job:</p>
+            <ul class="cs-list">
+                <li><strong>Use ImageJ/Fiji when:</strong> You just need simple, global thresholding.</li>
+                <li><strong>Use Cellpose/StarDist when:</strong> You have highly complex, overlapping cells and the time/hardware to setup the models.</li>
+                <li><strong>Use Quantosaurus when:</strong> Thresholding fails, but you don't want to code. You just want to paint a few examples, train a lightweight model, and get a count instantly.</li>
+            </ul>
+        </div>
+
+        <div class="cs-section cs-instructions">
+            <h3>Instructions</h3>
+            <div class="cs-steps">
+                <div class="cs-step">
+                    <div class="cs-step-number">1</div>
+                    <div class="cs-step-text">
+                        <strong>Choose Images</strong><br>
+                        Drag your microscopy images (.tif, .png, .jpg) directly onto the canvas or use the file picker.
+                    </div>
+                </div>
+                <div class="cs-step">
+                    <div class="cs-step-number">2</div>
+                    <div class="cs-step-text">
+                        <strong>Paint Examples</strong><br>
+                        Select the 🖌 Paint tool. Mark a few cells as 'Class 1' (Foreground) and mark the empty space as 'Class 2' (Background). The model only needs a few samples to start learning!
+                    </div>
+                </div>
+                <div class="cs-step">
+                    <div class="cs-step-number">3</div>
+                    <div class="cs-step-text">
+                        <strong>Get Counts</strong><br>
+                        Adjust the <em>Feature Scale (Sigma)</em> if your cells are fuzzy or large. The model trains automatically. Counts appear next to their classes!
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="cs-section">
+            <h3>Hotkeys & Controls</h3>
+            <div class="cs-hotkeys">
+                <div class="hk-row"><span>Space + Drag</span><span>Pan around the image</span></div>
+                <div class="hk-row"><span>Mouse Wheel</span><span>Zoom in / out</span></div>
+                <div class="hk-row"><span>[ / ]</span><span>Decrease / Increase Brush Size</span></div>
+                <div class="hk-row"><span>1 - 9</span><span>Select Class 1 through 9</span></div>
+                <div class="hk-row"><span>P / E / G</span><span>Toggle Paint / Erase / Grab Tool</span></div>
+            </div>
+        </div>
+
+        <div class="cs-section">
+            <h3>Frequently Asked Questions</h3>
+            <div class="cs-faq">
+                <strong>Q: How do I get better segmentation results?</strong>
+                <p>A: Ensure you provide diverse examples. Paint both the bright centers and dim edges of cells, and explicitly label artifacts or dust as background (Class 2).</p>
+                
+                <strong>Q: My browser crashed on export, why?</strong>
+                <p>A: Very large images (e.g., uncompressed .TIFs > 50MB) can exceed browser memory limits. Try downscaling your images before importing if you experience crashes.</p>
+            </div>
+        </div>
+
+        <div class="cs-footer">
+            <div>Built by <a href="https://github.com/Modjular" target="_blank">Modjular</a></div>
+            <div style="display: flex; gap: 15px;">
+                <a href="https://github.com/Modjular/quantosaurus" target="_blank">GitHub</a>
+                <a href="https://forum.image.sc/" target="_blank">Image.sc Forum</a>
+            </div>
+        </div>
+
     </div>
 </div>
 
@@ -286,6 +386,22 @@
     }
 
     function setupUI() {
+        // Cheatsheet Modal
+        const modalCS = document.getElementById('cheatsheetModal');
+        const btnOpenCS = document.getElementById('btnCheatsheet');
+        const btnCloseCS = document.getElementById('btnCloseCheatsheet');
+        const btnPrintCS = document.getElementById('btnPrintCheatsheet')
+        modalCS.onclick = (e) => { if (e.target === modalCS) modalCS.style.display = 'none'; };
+        btnOpenCS.onclick = () => modalCS.style.display = 'flex';
+        btnCloseCS.onclick = () => modalCS.style.display = 'none';
+        btnPrintCS.onclick = () => window.print();
+
+        // Open cheatsheet if user hasn't visited before
+        if (!localStorage.getItem('quantosaurus-visited')) {
+          localStorage.setItem('quantosaurus-visited', 'true');
+          modalCS.style.display = 'flex';
+        }
+
         // File input
         document.getElementById('fileInput').onchange = (e) =>
             addFiles(state, e.target.files).catch(console.error);

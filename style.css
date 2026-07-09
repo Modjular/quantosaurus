@@ -139,6 +139,15 @@ h2 {
     margin-bottom: -4px;
 }
 
+a {
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
 /* ── Form Controls & Buttons ───────────────────────────────────────── */
 .control-group {
     display: flex;
@@ -698,4 +707,285 @@ hr.divider {
         opacity: 1;
         transform: translateY(0);
     }
+}
+
+/* ── Cheatsheet Modal ────────────────────────────────────────────── */
+
+.cheatsheet-paper {
+    background: var(--bg-surface-elevated);
+    color: var(--text-main);
+    width: 100%;
+    max-width: 750px;
+    max-height: 90vh;
+    overflow-y: auto;
+    border-radius: var(--radius-md);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    padding: 30px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    border: 1px solid var(--border-subtle);
+    animation: modalFadeIn 0.15s ease-out;
+}
+
+/* Header & Close */
+
+.cs-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid var(--border-subtle);
+    padding-bottom: 16px;
+}
+
+.cs-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.btn-close-cs {
+    background: none;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+}
+.btn-close-cs:hover { 
+    background: var(--accent-danger); 
+    color: var(--text-light); 
+}
+
+/* ── Intro Grid (2/3 & 1/3) ──────────────────────────────────────── */
+.cs-intro-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 20px;
+    align-items: stretch;
+}
+
+/* Textbook-style Definition Block */
+.cs-what-is-it {
+    background: var(--bg-control);
+    border-left: 4px solid var(--accent-primary);
+    padding: 16px 20px;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.cs-what-is-it h3 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    color: var(--text-main);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.cs-what-is-it p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-dim);
+}
+.cs-what-is-it strong {
+    color: var(--text-main);
+    font-weight: 600;
+}
+
+/* Privacy Callout */
+.cs-privacy-banner {
+    background: rgba(40, 167, 69, 0.08); 
+    border: 1px solid var(--accent-success);
+    color: var(--text-dim);
+    padding: 16px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.cs-privacy-banner strong {
+    color: var(--accent-success);
+    font-size: 14px;
+}
+
+/* Responsive Grid Breakpoint */
+@media (max-width: 650px) {
+    .cs-intro-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+    }
+    .cs-what-is-it {
+        border-left: none;
+        border-top: 4px solid var(--accent-primary);
+        border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    }
+}
+
+/* Typography & Sections */
+.cs-section h3 { 
+    margin: 0 0 12px 0; 
+    font-size: 16px; 
+    color: var(--text-main);
+}
+.cs-section p { 
+    margin: 0 0 8px 0; 
+    font-size: 13px; 
+    line-height: 1.5; 
+    color: var(--text-dim);
+}
+.cs-list { 
+    margin: 0; 
+    padding-left: 20px; 
+    font-size: 13px; 
+    line-height: 1.6; 
+    color: var(--text-dim);
+}
+.cs-list li { margin-bottom: 6px; }
+.cs-list strong { color: var(--text-main); }
+
+/* Instruction Steps */
+.cs-instructions {
+    padding: 1em;
+    border: 2px dashed var(--accent-subtle);
+    border-radius: 4px;
+}
+
+.cs-steps { 
+    display: flex; 
+    flex-direction: column; 
+    gap: 12px; 
+}
+.cs-step { 
+    display: flex; 
+    gap: 16px; 
+    align-items: flex-start; 
+}
+.cs-step-number {
+    background: var(--accent-primary);
+    color: var(--text-light);
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    flex-shrink: 0;
+    font-size: 13px;
+}
+.cs-step-text { 
+    font-size: 13px; 
+    line-height: 1.5; 
+    color: var(--text-dim);
+}
+.cs-step-text strong { color: var(--text-main); }
+
+/* Hotkeys */
+.cs-hotkeys {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.hk-row {
+    display: flex;
+    justify-content: space-between;
+    background: var(--bg-control);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    border: 1px solid var(--border-control);
+}
+.hk-row span:first-child { 
+    font-weight: 600; 
+    color: var(--accent-primary); /* Standout key color */
+}
+
+/* FAQ */
+.cs-faq strong { 
+    display: block; 
+    font-size: 13px; 
+    margin-top: 12px; 
+    color: var(--text-main);
+}
+.cs-faq p { 
+    margin-top: 4px; 
+    color: var(--text-muted); 
+    font-size: 12px;
+}
+
+/* Footer */
+.cs-footer {
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.cs-footer a { 
+    color: var(--accent-primary); 
+    text-decoration: none; 
+}
+.cs-footer a:hover { 
+    color: var(--accent-primary-hover);
+    text-decoration: underline; 
+}
+
+/* Responsive: Mobile */
+@media (max-width: 600px) {
+    #cheatsheetModal { padding: 0; }
+    .cheatsheet-paper { 
+        max-width: 100%; 
+        height: 100vh; 
+        max-height: 100vh; 
+        border-radius: 0; 
+        padding: 20px; 
+        border: none;
+    }
+    .cs-hotkeys { grid-template-columns: 1fr; }
+}
+
+/* Print Optimization */
+@media print {
+    body * { visibility: hidden; }
+    #cheatsheetModal, #cheatsheetModal * {
+        visibility: visible;
+    }
+    #cheatsheetModal {
+        position: absolute;
+        left: 0;
+        top: 0;
+        padding: 0;
+        background: transparent;
+    }
+    .cheatsheet-paper {
+        box-shadow: none;
+        max-width: 100%;
+        height: auto;
+        overflow: visible;
+        padding: 0;
+        border: none;
+    }
+    .btn-close-cs { display: none; }
+    
+    /* Force light mode colors for printing so it doesn't drain ink */
+    .cheatsheet-paper { 
+        background: white !important; 
+        color: black !important; 
+    }
+    .cs-header, .cs-footer { border-color: #ccc !important; }
+    .hk-row { 
+        background: #f0f0f0 !important; 
+        border-color: #ccc !important;
+    }
+    .cs-section h3, .cs-faq strong, .cs-list strong, .cs-step-text strong {
+        color: black !important;
+    }
+    .cs-section p, .cs-list, .cs-step-text, .cs-faq p, .cs-header p {
+        color: #333 !important;
+    }
+
+    .cs-header-actions { display: none; } /* Hides both Print and Close buttons on paper */
 }
