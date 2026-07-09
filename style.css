@@ -576,6 +576,9 @@ button:disabled {
     background: var(--bg-viewport);
     overflow: hidden;
     transition: background 0.2s;
+    /* Let JS own pan/zoom/paint gestures instead of the browser's native
+       touch scroll/pinch-zoom, which would otherwise fight with camera.js. */
+    touch-action: none;
 }
 #viewport.drag-active {
     background: var(--bg-viewport-drag);

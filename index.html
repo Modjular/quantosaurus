@@ -259,6 +259,7 @@
         camera: { x: 0, y: 0, scale: 1 },
         isSpaceDown: false,
         isPanning: false,
+        activePointerCount: 0,
     };
 
     function init() {
@@ -427,22 +428,29 @@
         };
 
         // Brush Size
-        document.getElementById('brushSizeRange').oninput = () => {
-            const size = parseInt(document.getElementById('brushSizeRange').value, 10);
-            document.getElementById('brushVal').innerText = size;
-        };
+        const brushRange = document.getElementById('brushSizeRange');
+        const brushVal    = document.getElementById('brushVal');
+        function setBrushSize(size) {
+            const clamped = Math.min(parseInt(brushRange.max, 10), Math.max(parseInt(brushRange.min, 10), size));
+            brushRange.value = clamped;
+            brushVal.innerText = clamped;
+        }
+        brushRange.oninput = () => setBrushSize(parseInt(brushRange.value, 10));
 
         // Tools Setup (Grab, Paint, Erase)
+        function selectTool(tool) {
+            const btn = document.querySelector(`.tool-btn[data-tool="${tool}"]`);
+            if (!btn) return;
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.toolMode = tool;
+
+            // Update body class for cursors
+            document.body.classList.remove('mode-grab', 'mode-paint', 'mode-erase');
+            document.body.classList.add(`mode-${state.toolMode}`);
+        }
         document.querySelectorAll('.tool-btn').forEach(btn => {
-            btn.onclick = () => {
-                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                state.toolMode = btn.dataset.tool;
-                
-                // Update body class for cursors
-                document.body.classList.remove('mode-grab', 'mode-paint', 'mode-erase');
-                document.body.classList.add(`mode-${state.toolMode}`);
-            };
+            btn.onclick = () => selectTool(btn.dataset.tool);
         });
 
         // Setup class selector with stat badges. The forest owns the class count
@@ -470,12 +478,15 @@
         });
 
         // Class selector interaction
+        function selectClass(index) {
+            const el = document.querySelector(`.class-item[data-class="${index}"]`);
+            if (!el) return;
+            document.querySelectorAll('.class-item').forEach(i => i.classList.remove('active'));
+            el.classList.add('active');
+            state.currentClass = index;
+        }
         document.querySelectorAll('.class-item').forEach(el => {
-            el.onclick = () => {
-                document.querySelectorAll('.class-item').forEach(i => i.classList.remove('active'));
-                el.classList.add('active');
-                state.currentClass = parseInt(el.dataset.class, 10);
-            };
+            el.onclick = () => selectClass(parseInt(el.dataset.class, 10));
         });
 
         // Class rename — persist on blur. Clicking into the name to edit shouldn't
@@ -506,6 +517,28 @@
                 });
                 saveSettings(state);
             };
+        });
+
+        // Hotkeys (see cheatsheet): [ / ] resize brush, 1-9 select class, P/E/G switch tool.
+        // Ignored while typing into an input/textarea or renaming a class (contenteditable).
+        window.addEventListener('keydown', (e) => {
+            const target = e.target;
+            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+            if (e.key === '[') {
+                setBrushSize(parseInt(brushRange.value, 10) - 1);
+            } else if (e.key === ']') {
+                setBrushSize(parseInt(brushRange.value, 10) + 1);
+            } else if (e.key === 'p' || e.key === 'P') {
+                selectTool('paint');
+            } else if (e.key === 'e' || e.key === 'E') {
+                selectTool('erase');
+            } else if (e.key === 'g' || e.key === 'G') {
+                selectTool('grab');
+            } else if (e.key >= '1' && e.key <= '9') {
+                selectClass(parseInt(e.key, 10) - 1);
+            }
         });
 
         // Export
