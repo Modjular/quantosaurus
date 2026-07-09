@@ -122,7 +122,7 @@
 </div>
 <script type="module">
     import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
-    import { addFiles } from './js/images.js';
+    import { addFiles, redrawLabels } from './js/images.js';
     import { zipImages } from './js/export.js';
     import { setupCamera } from './js/camera.js';
     import { FlatRandomForest } from './js/rf.js';
@@ -347,7 +347,10 @@
             input.oninput = (e) => {
                 const idx = parseInt(input.dataset.class, 10);
                 state.labelColors[idx] = e.target.value;
-                state.images.forEach(img => img.backend.setColors(state.labelColors));
+                state.images.forEach(img => {
+                    img.backend.setColors(state.labelColors);
+                    redrawLabels(state, img);
+                });
             };
         });
 

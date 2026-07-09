@@ -1318,11 +1318,13 @@ fn main(
 */
 const STATS_ACCUMULATOR_SHADER = `
 // Summed fields are 64-bit, split into {lo, hi} u32 words. WGSL has no atomic<u64>,
-// so add64 emulates it: add into the low word, and on wrap carry 1 into the high
-// word. Exact and deterministic (integer add is associative). See STATS_LAYOUT.
-// The lo/hi pair is grouped into a U64 struct so add64 takes a single pointer —
-// WGSL forbids passing two pointers into the same buffer to one function (they'd
-// be treated as aliasing). Layout is identical to nine consecutive u32.
+// so we emulate it: add into the low word, and on wrap carry 1 into the high word.
+// Exact and deterministic (integer add is associative). See STATS_LAYOUT.
+// The lo/hi pair is grouped into a U64 struct; layout is identical to nine
+// consecutive u32. The carrying add is inlined at each call site (see below)
+// rather than factored into a helper because WGSL forbids passing a pointer in
+// the 'storage' address space as a function parameter (that needs the optional
+// unrestricted_pointer_parameters feature, which Tint rejects here).
 struct U64 { lo: atomic<u32>, hi: atomic<u32> };
 struct Metrics {
     area: atomic<u32>,
@@ -1342,11 +1344,6 @@ struct Params { max_labels: u32 };
 @group(0) @binding(2) var<storage, read_write> stats: array<Metrics>;
 @group(0) @binding(3) var<uniform> params: Params;
 
-fn add64(acc: ptr<storage, U64, read_write>, v: u32) {
-    let old = atomicAdd(&(*acc).lo, v);
-    if (old > 0xffffffffu - v) { atomicAdd(&(*acc).hi, 1u); } // low word wrapped -> carry
-}
-
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = u32({{WIDTH}}); let h = u32({{HEIGHT}});
@@ -1362,11 +1359,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let intensity_f = textureLoad(raw_intensity, vec2<i32>(id.xy), 0).r;
     let intensity_u = u32(intensity_f * {{SCALE}});
 
-    // Accumulate: area fits u32 (pixel count); the growing sums use 64-bit add64.
+    // Accumulate: area fits u32 (pixel count); the growing sums carry into 64 bits.
+    // Each sum adds into its low word and, on wrap, carries 1 into the high word.
     atomicAdd(&stats[label].area, 1u);
-    add64(&stats[label].total, intensity_u);
-    add64(&stats[label].sum_x, id.x);
-    add64(&stats[label].sum_y, id.y);
+    let old_total = atomicAdd(&stats[label].total.lo, intensity_u);
+    if (old_total > 0xffffffffu - intensity_u) { atomicAdd(&stats[label].total.hi, 1u); }
+    let old_x = atomicAdd(&stats[label].sum_x.lo, id.x);
+    if (old_x > 0xffffffffu - id.x) { atomicAdd(&stats[label].sum_x.hi, 1u); }
+    let old_y = atomicAdd(&stats[label].sum_y.lo, id.y);
+    if (old_y > 0xffffffffu - id.y) { atomicAdd(&stats[label].sum_y.hi, 1u); }
 
     // Min/Max don't sum, so a single u32 holds the raw fixed-point value.
     atomicMin(&stats[label].min_intensity, intensity_u);
