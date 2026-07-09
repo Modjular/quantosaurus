@@ -211,6 +211,15 @@
             <p class="hint">
                 At least 5 labels are needed to train before export.
             </p>
+
+            <button id="btnExportIlp" class="btn-primary" disabled>
+                Export ilastik Project (.ilp)
+            </button>
+
+            <p class="hint">
+                Opens in desktop ilastik with your images and labels; ilastik retrains its own
+                classifier on open. Keep the original image files alongside the .ilp.
+            </p>
         </div>
 
     </div>
@@ -223,7 +232,7 @@
 <script type="module">
     import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
     import { addFiles, redrawLabels } from './js/images.js';
-    import { zipImages } from './js/export.js';
+    import { zipImages, exportIlp } from './js/export.js';
     import { setupCamera } from './js/camera.js';
     import { FlatRandomForest } from './js/rf.js';
     import { scheduleTraining } from './js/training.js'
@@ -579,6 +588,29 @@
             } finally {
                 btnExport.disabled = false;
                 btnExport.innerText = 'Export Loaded Images'
+            }
+        };
+
+        // Export .ilp — reads the live (possibly user-edited) class-name text
+        // directly from the class selector, since state doesn't persist it.
+        const btnExportIlp = document.getElementById('btnExportIlp');
+        btnExportIlp.onclick = () => {
+            try {
+                const labelNames = Array.from(
+                    document.querySelectorAll('.class-item span[contenteditable]')
+                ).map(el => el.textContent.trim());
+
+                const blob = exportIlp(state, { labelNames });
+
+                const link = document.createElement('a');
+                const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,"");
+                link.href = URL.createObjectURL(blob);
+                link.download = `quantosaurus_${yyyymmdd}.ilp`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+            } catch (err) {
+                console.error(err);
+                alert(`ilastik project export failed: ${err.message}`);
             }
         };
     }

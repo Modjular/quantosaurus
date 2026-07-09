@@ -23,6 +23,9 @@ export function updateExportButtonCount(state) {
     const n   = state.images.length;
     btn.disabled  = n === 0;
     btn.innerText = n > 0 ? `Export Loaded Images (${n})` : 'Export Loaded Images';
+
+    const ilpBtn = document.getElementById('btnExportIlp');
+    if (ilpBtn) ilpBtn.disabled = n === 0;
 }
 
 /** Shows/hides the image-list empty-state placeholder. @param {Object} state */

@@ -1,5 +1,6 @@
 import { writeImage, setPipelinesBaseUrl } from './vendor/itk-wasm-image-io.min.js';
 import { STATS_LAYOUT } from './config.js';
+import { buildIlpProject } from './ilp.js';
 
 // itk-wasm fetches its WASM pipelines relative to this URL at runtime; point it at the
 // vendored copy instead of the jsDelivr CDN default.
@@ -227,4 +228,24 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
             worker.postMessage(filesToZip, transferables);
         });
     }
+}
+
+/**
+ * Builds a downloadable ilastik Pixel Classification project (`.ilp`)
+ * reflecting the current app state: one lane per loaded image (referenced by
+ * filename — browsers can't expose a real filesystem path, so keep the
+ * original image file(s) alongside the exported `.ilp`, or relink them in
+ * ilastik's Data Selection dialog), the user's painted labels as one
+ * bounding-box block per image, label names/colors, and a starter feature
+ * selection. No trained classifier is embedded — Quantosaurus trains on a
+ * custom on-GPU feature bank that doesn't correspond to the vigra features
+ * desktop ilastik computes itself, so ilastik retrains from the exported
+ * labels on open instead (see js/ilp.js for the full rationale).
+ * @param {Object} state - Shared app state.
+ * @param {Object} [options] - Forwarded to buildIlpProject (e.g. labelNames).
+ * @returns {Blob} The `.ilp` file, ready for download.
+ */
+export function exportIlp(state, options = {}) {
+    const bytes = buildIlpProject(state, options);
+    return new Blob([bytes], { type: 'application/octet-stream' });
 }
