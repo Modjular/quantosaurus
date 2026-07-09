@@ -22,8 +22,7 @@ function throws(fn, msg) {
     catch { console.log(`  ok  ${msg}`); }
 }
 
-function containsAscii(buf, str) {
-    const needle = new TextEncoder().encode(str);
+function containsBytes(buf, needle) {
     outer:
     for (let i = 0; i <= buf.length - needle.length; i++) {
         for (let j = 0; j < needle.length; j++) {
@@ -34,8 +33,15 @@ function containsAscii(buf, str) {
     return false;
 }
 
-function fakeImage({ name, width, height, labels }) {
-    return { name, width, height, labels };
+function containsAscii(buf, str) {
+    return containsBytes(buf, new TextEncoder().encode(str));
+}
+
+function fakeImage({ name, width, height, labels, intensityArray }) {
+    // Real imgState entries always carry a real Float32Array (see io.js); default
+    // to a distinctive ramp so tests can assert embedded pixel bytes round-trip.
+    const pixels = intensityArray ?? Float32Array.from({ length: width * height }, (_, i) => i * 1.5);
+    return { name, width, height, labels, intensityArray: pixels };
 }
 
 function fakeState(images, overrides = {}) {
@@ -62,16 +68,37 @@ function fakeState(images, overrides = {}) {
     }
 }
 
-// ---- Test 2: one image with no labels still gets a lane + empty label set ----
+// ---- Test 2: one image with no labels still gets a lane + embedded raw data ----
 {
     const img = fakeImage({ name: 'cells.tif', width: 100, height: 80, labels: [] });
     const bytes = buildIlpProject(fakeState([img]));
-    for (const s of ['lane0000', 'labels000', 'Raw Data', 'cells.tif', 'cells']) {
+    for (const s of ['lane0000', 'labels000', 'Raw Data', 'cells']) {
+        assert(containsAscii(bytes, s), `one-image project contains "${s}"`);
+    }
+    // Raw data is embedded (ProjectInternal), not a FileSystem path reference —
+    // browsers can't expose a real filesystem path for an uploaded file.
+    for (const s of ['ProjectInternalDatasetInfo', 'ProjectInternal', 'local_data', 'inner_path']) {
         assert(containsAscii(bytes, s), `one-image project contains "${s}"`);
     }
     // shape is stored as int64 [1, height, width] — zyx convention
     assert(containsAscii(bytes, '"key": "z"') && containsAscii(bytes, '"key": "y"') && containsAscii(bytes, '"key": "x"'),
         'Raw Data axistags encode z, y, x axes');
+}
+
+// ---- Test 2b: embedded raw pixel bytes round-trip exactly ----
+{
+    function containsFloat32LE(buf, value) {
+        return containsBytes(buf, new Uint8Array(new Float32Array([value]).buffer));
+    }
+    const w = 4, h = 3;
+    const intensityArray = Float32Array.from({ length: w * h }, (_, i) => 1000 + i * 0.25);
+    const img = fakeImage({ name: 'ramp.tif', width: w, height: h, labels: [], intensityArray });
+    const bytes = buildIlpProject(fakeState([img]));
+    // Spot-check a few distinctive values from the source array land in the
+    // output byte-for-byte (proves the embedded array isn't a placeholder/fill).
+    for (const v of [intensityArray[0], intensityArray[5], intensityArray[w * h - 1]]) {
+        assert(containsFloat32LE(bytes, v), `embedded pixel data contains float32 value ${v}`);
+    }
 }
 
 // ---- Test 3: label bounding box is computed correctly end-to-end ----

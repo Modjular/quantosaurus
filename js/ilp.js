@@ -22,6 +22,19 @@ import { RF_CONFIG } from './config.js';
  * format doc, so multi-image projects round-trip the same way desktop
  * ilastik itself would produce them.
  *
+ * Every image's raw pixels are embedded directly in the `.ilp` — browsers
+ * never expose a real filesystem path for an uploaded file (only a bare
+ * filename), so a `FileSystem`-location reference (what desktop ilastik
+ * itself writes for on-disk images) would only resolve if the original file
+ * happened to still be sitting next to the exported `.ilp`. Instead each lane
+ * uses ilastik's own "copy into project" representation
+ * (`ProjectInternalDatasetInfo` in `opDataSelection.py`): the array lives at
+ * `Input Data/local_data/<datasetId>` and the lane's `Raw Data` info group
+ * points at it via `location: "ProjectInternal"` + `inner_path` — the exact
+ * dispatch key `dataSelectionSerializer.py._readDatasetInfo` switches on
+ * (`__class__` when present, else `location`) to decide how to load a lane.
+ * The result is a single, fully self-contained, portable `.ilp` file.
+ *
  * What is deliberately NOT included: a trained classifier
  * (`PixelClassification/ClassifierForests`). Quantosaurus trains its
  * `FlatRandomForest` on a custom on-GPU Gaussian-derivative feature bank
@@ -132,6 +145,25 @@ function dtFloat64() {
   v.setUint8(14, 0); // mantissa location
   v.setUint8(15, 52); // mantissa size
   v.setUint32(16, 1023, true); // exponent bias
+  return b;
+}
+// IEEE-754 little-endian single: class 1. Used for raw image pixel data —
+// intensityArray is already Float32Array, so this stores it losslessly with
+// no widening to float64.
+function dtFloat32() {
+  const { b, v } = newBuf(20);
+  v.setUint8(0, (1 << 4) | 1); // version 1, class 1 (floating-point)
+  v.setUint8(1, 0x20); // bit field byte0: mantissa normalization = 2 (implied MSB)
+  v.setUint8(2, 0x1f); // bit field byte1: sign bit location = 31
+  v.setUint8(3, 0x00);
+  v.setUint32(4, 4, true); // element size
+  v.setUint16(8, 0, true); // bit offset
+  v.setUint16(10, 32, true); // bit precision
+  v.setUint8(12, 23); // exponent location
+  v.setUint8(13, 8); // exponent size
+  v.setUint8(14, 0); // mantissa location
+  v.setUint8(15, 23); // mantissa size
+  v.setUint32(16, 127, true); // exponent bias
   return b;
 }
 
@@ -401,6 +433,14 @@ function dsFloat64Array(name, nums) {
   nums.forEach((n, i) => v.setFloat64(i * 8, n, true));
   return { kind: 'dataset', name, dtBody: dtFloat64(), dims: [nums.length], data };
 }
+// Raw N-D float32 payload — a zero-copy byte view over an existing
+// Float32Array (e.g. an image's intensityArray), used for embedded pixel
+// data. Every mainstream JS engine is little-endian, matching HDF5's
+// required byte order here, so no repacking is needed.
+function dsFloat32Nd(name, dims, floatArray) {
+  const data = new Uint8Array(floatArray.buffer, floatArray.byteOffset, floatArray.byteLength);
+  return { kind: 'dataset', name, dtBody: dtFloat32(), dims, data };
+}
 function dsInt32Matrix(name, rows) {
   const R = rows.length, C = rows[0].length;
   const data = new Uint8Array(4 * R * C);
@@ -533,24 +573,49 @@ export function stripExtension(name) {
   return name.replace(/\.[^/.]+$/, '');
 }
 
-/** Builds one lane's `Input Data/infos/laneNNNN/Raw Data` group. */
-function buildRawDataGroup(img) {
+/**
+ * Builds one lane's `Input Data/infos/laneNNNN/Raw Data` info group plus the
+ * raw-pixel dataset it points at, embedded under `Input Data/local_data/`.
+ *
+ * Browsers never expose a real filesystem path for an uploaded file — only a
+ * bare filename — so a `FileSystem`-location reference (as desktop ilastik
+ * itself writes for on-disk images) would only work if the original file
+ * happened to still be sitting next to the `.ilp`. Instead this mirrors
+ * ilastik's own "copy into project" path: `ProjectInternalDatasetInfo`
+ * (`opDataSelection.py`), which stores the array directly inside the project
+ * at `Input Data/local_data/<datasetId>` and points the lane at it via
+ * `location: "ProjectInternal"` + `inner_path`. That's the dispatch key
+ * `dataSelectionSerializer.py._readDatasetInfo` actually switches on
+ * (`__class__` when present, else `location`), so the exported `.ilp` is
+ * fully self-contained — no separate image files to keep track of.
+ * @returns {{infoGroup: Object, dataNode: Object}}
+ */
+function buildRawDataEntry(img) {
   const nickname = stripExtension(img.name);
-  return group('Raw Data', [
-    dsStr('__class__', 'FilesystemDatasetInfo'),
+  const datasetId = crypto.randomUUID();
+  const innerPath = `/Input Data/local_data/${datasetId}`;
+
+  const infoGroup = group('Raw Data', [
+    dsStr('__class__', 'ProjectInternalDatasetInfo'),
     dsBoolScalar('allowLabels', true),
     dsStr('axistags', AXISTAGS_ZYX),
-    dsStr('datasetId', crypto.randomUUID()),
+    dsStr('datasetId', datasetId),
     dsStr('display_mode', 'default'),
-    // Browsers have no real filesystem path — filePath is the original
-    // filename; keep the source image file alongside the exported .ilp (or
-    // relink it in ilastik's Data Selection dialog) so ilastik can find it.
-    dsStr('filePath', img.name),
-    dsStr('location', 'FileSystem'),
+    dsStr('filePath', innerPath), // legacy-compat: real ilastik sets this to inner_path too
+    dsStr('inner_path', innerPath),
+    dsStr('location', 'ProjectInternal'),
     dsStr('nickname', nickname),
     dsBoolScalar('normalizeDisplay', false),
     dsInt64Array('shape', [1, img.height, img.width]),
   ]);
+
+  // intensityArray is already Float32Array, laid out y*width+x (row-major,
+  // x fastest) — exactly a [1, height, width] zyx array in C order, so no
+  // reshaping is needed, just a direct byte copy.
+  const dataNode = dsFloat32Nd(datasetId, [1, img.height, img.width], img.intensityArray);
+  dataNode.attrs = [strAttr('axistags', AXISTAGS_ZYX)];
+
+  return { infoGroup, dataNode };
 }
 
 /** Builds one lane's `PixelClassification/LabelSets/labelsNNN` group. */
@@ -614,11 +679,12 @@ export function buildIlpProject(state, options = {}) {
   const classNames = options.classNames ?? Array.from({ length: numClasses }, (_, i) => `Class ${i + 1}`);
   const colorRows = Array.from({ length: numClasses }, (_, i) => hexToRgb(state.labelColors?.[i]));
 
+  const rawDataEntries = images.map(buildRawDataEntry);
   const inputData = group('Input Data', [
     dsStr('StorageVersion', '0.2'),
     dsStrArray('Role Names', ['Raw Data', 'Prediction Mask']),
-    group('infos', images.map((img, i) => group(laneName(i), [buildRawDataGroup(img)]))),
-    group('local_data', []),
+    group('infos', rawDataEntries.map((e, i) => group(laneName(i), [e.infoGroup]))),
+    group('local_data', rawDataEntries.map((e) => e.dataNode)),
   ]);
 
   const selectionMatrix = FEATURE_IDS.map((_, fi) => FEATURE_SCALES.map((_, si) => fi < 2 && si < 2));
@@ -632,7 +698,11 @@ export function buildIlpProject(state, options = {}) {
 
   const pixelClassification = group('PixelClassification', [
     dsStr('StorageVersion', '0.1'),
-    dsStrArray('classNames', classNames),
+    // The HDF5 field name must stay the literal 'LabelNames' — that's the
+    // key ilastik's own PixelClassificationSerializer reads/writes
+    // (SerialListSlot(operator.LabelNames)); classNames here is just our
+    // local variable name, unrelated to the on-disk schema.
+    dsStrArray('LabelNames', classNames),
     dsInt32Matrix('LabelColors', colorRows),
     dsInt32Matrix('PmapColors', colorRows),
     group('Bookmarks', []),

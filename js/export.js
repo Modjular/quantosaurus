@@ -231,16 +231,17 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
 }
 
 /**
- * Builds a downloadable ilastik Pixel Classification project (`.ilp`)
- * reflecting the current app state: one lane per loaded image (referenced by
- * filename — browsers can't expose a real filesystem path, so keep the
- * original image file(s) alongside the exported `.ilp`, or relink them in
- * ilastik's Data Selection dialog), the user's painted labels as one
- * bounding-box block per image, label names/colors, and a starter feature
- * selection. No trained classifier is embedded — Quantosaurus trains on a
- * custom on-GPU feature bank that doesn't correspond to the vigra features
- * desktop ilastik computes itself, so ilastik retrains from the exported
- * labels on open instead (see js/ilp.js for the full rationale).
+ * Builds a downloadable, fully self-contained ilastik Pixel Classification
+ * project (`.ilp`) reflecting the current app state: one lane per loaded
+ * image with its raw pixels embedded directly in the file (ilastik's
+ * "Project Internal" storage — browsers can't expose a real filesystem path
+ * for an uploaded file, so this avoids depending on the original image files
+ * still being around), the user's painted labels as one bounding-box block
+ * per image, label names/colors, and a starter feature selection. No trained
+ * classifier is embedded — Quantosaurus trains on a custom on-GPU feature
+ * bank that doesn't correspond to the vigra features desktop ilastik
+ * computes itself, so ilastik retrains from the exported labels on open
+ * instead (see js/ilp.js for the full rationale).
  * @param {Object} state - Shared app state.
  * @param {Object} [options] - Forwarded to buildIlpProject (e.g. classNames).
  * @returns {Blob} The `.ilp` file, ready for download.
