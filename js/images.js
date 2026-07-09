@@ -297,6 +297,23 @@ function getPixelsInRadius(cx, cy, radius, width, height) {
  * @param {Object} imgState - The target image's state entry.
  * @param {MouseEvent} e - The triggering mouse event.
  */
+/**
+ * Redraws every painted pixel on an image's label canvas using the current
+ * state.labelColors palette. paint() bakes each pixel's color in at paint
+ * time (a plain 2D canvas fillRect), so unlike the GPU composite overlay it
+ * doesn't pick up palette changes on its own — call this after a color edit.
+ * @param {Object} state - Shared app state; reads labelColors.
+ * @param {Object} imgState - The target image's state entry; reads labels.
+ */
+export function redrawLabels(state, imgState) {
+    const ctx = imgState.labelCanvas.getContext('2d');
+    ctx.clearRect(0, 0, imgState.width, imgState.height);
+    for (const lbl of imgState.labels) {
+        ctx.fillStyle = state.labelColors[lbl.cls] ?? state.labelColors[0];
+        ctx.fillRect(lbl.x, lbl.y, 1, 1);
+    }
+}
+
 export function paint(state, imgState, e) {
     const rect   = imgState._cachedRect || imgState.labelCanvas.getBoundingClientRect();
     const scaleX = imgState.width  / rect.width;
