@@ -197,6 +197,12 @@ input[type="range"]::-moz-range-thumb {
     background: var(--accent-primary);
     cursor: pointer;
 }
+input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+}
+input[type="range"]::-moz-range-thumb:hover {
+    transform: scale(1.15);
+}
 
 input[type="checkbox"] {
     accent-color: var(--accent-primary);
