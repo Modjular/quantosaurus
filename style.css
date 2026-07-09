@@ -414,6 +414,26 @@ button:disabled {
     height: 14px;
     border-radius: var(--radius-sm);
     flex-shrink: 0;
+    /* Native <input type="color"> chrome reset — keep it looking like the plain
+       swatch div it replaces; only the hover ring below signals it's clickable. */
+    border: none;
+    padding: 0;
+    cursor: pointer;
+}
+.color-box::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+.color-box::-webkit-color-swatch {
+    border: none;
+    border-radius: var(--radius-sm);
+}
+.color-box::-moz-color-swatch {
+    border: none;
+    border-radius: var(--radius-sm);
+}
+.color-box:hover {
+    outline: 1px solid var(--accent-primary);
+    outline-offset: 1px;
 }
 .class-stat-badge {
     margin-left: auto;

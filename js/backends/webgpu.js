@@ -6,7 +6,7 @@
  *   initialize, allocateImage, updateFeatures, downloadFeatures,
  *   gatherFeaturesForTraining, runInference, renderComposite,
  *   downloadProbabilities, computeConnectedComponents, computeStats,
- *   downloadStats, downloadLabels, destroy.
+ *   downloadStats, downloadLabels, setWindow, setColors, destroy.
  *
  * Everything runs on-GPU via compute shaders: a separable Gaussian-derivative
  * filter bank produces 8 per-pixel features; a Random Forest pass turns them
@@ -44,6 +44,10 @@ export class WebGpuBackend {
         // shader recompile / pipeline rebuild on the drag hot path.
         this.compositePipeline = null;
         this.windowBuffer = null;
+        // Per-class overlay colors as a uniform buffer read by the composite pass,
+        // so recoloring a class only needs a writeBuffer + redraw (see setColors),
+        // not a shader recompile. The class *count* is still baked into the shader.
+        this.colorBuffer = null;
 
         this.labelColors = labelColors || [
             'rgba(255,0,0,1.0)',
@@ -218,13 +222,11 @@ export class WebGpuBackend {
      */
     _buildCompositePipeline() {
         const colors = this.labelColors;
-        const colorsWGSL = colors.map(parseColorToWGSL).join(',\n            ');
 
         const code = COMPOSITE_SHADER
             .replace(/{{WIDTH}}/g, this.width)
             .replace(/{{HEIGHT}}/g, this.height)
-            .replace(/{{NUM_COLORS}}/g, colors.length)
-            .replace(/{{COLORS_ARRAY}}/g, colorsWGSL);
+            .replace(/{{NUM_COLORS}}/g, colors.length);
 
         const module = this.device.createShaderModule({ code });
         this.compositePipeline = this.device.createRenderPipeline({
@@ -240,6 +242,33 @@ export class WebGpuBackend {
             size: 8,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
+
+        if (this.colorBuffer) this.colorBuffer.destroy();
+        // Palette { data: array<vec4<f32>, NUM_COLORS> } — one 16-byte vec4 per class,
+        // updated via writeBuffer in setColors (no pipeline rebuild needed).
+        this.colorBuffer = this.device.createBuffer({
+            size: colors.length * 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        this._writeColorBuffer();
+    }
+
+    /**
+     * Packs the current labelColors into the composite palette uniform buffer as
+     * one vec4<f32> (rgba, 0–1) per class. Called from _buildCompositePipeline and
+     * whenever setColors changes the palette.
+     */
+    _writeColorBuffer() {
+        const n = this.labelColors.length;
+        const data = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+            const [r, g, b, a] = parseColorToRGBA(this.labelColors[i]);
+            data[i * 4 + 0] = r;
+            data[i * 4 + 1] = g;
+            data[i * 4 + 2] = b;
+            data[i * 4 + 3] = a;
+        }
+        this.device.queue.writeBuffer(this.colorBuffer, 0, data);
     }
 
     /**
@@ -825,7 +854,8 @@ export class WebGpuBackend {
                 // r32float is unfilterable, so the composite uses textureLoad (no sampler).
                 { binding: 0, resource: this.rawIntensityTexture.createView() },
                 { binding: 1, resource: { buffer: this.probBuffer } },
-                { binding: 2, resource: { buffer: this.windowBuffer } }
+                { binding: 2, resource: { buffer: this.windowBuffer } },
+                { binding: 3, resource: { buffer: this.colorBuffer } }
             ]
         });
 
@@ -862,6 +892,23 @@ export class WebGpuBackend {
     }
 
     /**
+     * Updates the per-class overlay colors and repaints. Only writes into the
+     * palette uniform buffer and re-records the draw with the existing pipeline —
+     * no shader recompile — so a color edit is cheap. Recolors the classes the
+     * image was allocated with (the class *count* is fixed for the image's
+     * lifetime); any extra entries in `colors` are ignored, and any missing ones
+     * leave that class's current color unchanged.
+     * @param {string[]} colors - CSS color strings indexed by class.
+     */
+    setColors(colors) {
+        for (let i = 0; i < this.labelColors.length && i < colors.length; i++) {
+            this.labelColors[i] = colors[i];
+        }
+        this._writeColorBuffer();
+        this.renderComposite();
+    }
+
+    /**
      * Reads the probability buffer back to the CPU as `numColors` channels per
      * pixel, packed sequentially.
      * @returns {Promise<Float32Array>} width*height*numColors probabilities.
@@ -882,6 +929,7 @@ export class WebGpuBackend {
         if (this.statsCounterBuffer) { this.statsCounterBuffer.destroy(); this.statsCounterBuffer = null; }
         if (this.statsParamsBuffer)  { this.statsParamsBuffer.destroy();  this.statsParamsBuffer = null; }
         if (this.windowBuffer)       { this.windowBuffer.destroy();       this.windowBuffer = null; }
+        if (this.colorBuffer)        { this.colorBuffer.destroy();        this.colorBuffer = null; }
         // Pipelines have no destroy(); drop references so they can be GC'd.
         this.compositePipeline = null;
         this._pipelineCache.clear();
@@ -958,12 +1006,15 @@ function gaussian_kernel(scale, order = 0) {
 }
 
 /**
- * Converts any valid CSS color string (hex3/6/8, rgb/rgba, hsl/hsla, named
- * colors, etc.) into a WGSL vec4<f32> literal, by letting the browser's own
+ * Parses any valid CSS color string (hex3/6/8, rgb/rgba, hsl/hsla, named colors,
+ * etc.) into normalized [r, g, b, a] floats in 0–1, by letting the browser's own
  * CSS color parser do the work via a 1x1 canvas instead of hand-rolled regex.
+ * Used to pack the composite palette uniform buffer (see _writeColorBuffer).
+ * @param {string} colorStr - Any CSS color string.
+ * @returns {[number, number, number, number]} rgba components in 0–1.
  */
 let _colorParseCtx = null;
-function parseColorToWGSL(colorStr) {
+function parseColorToRGBA(colorStr) {
     if (!_colorParseCtx) {
         const canvas = document.createElement('canvas');
         canvas.width = 1;
@@ -976,7 +1027,7 @@ function parseColorToWGSL(colorStr) {
     ctx.clearRect(0, 0, 1, 1);
     ctx.fillRect(0, 0, 1, 1);
     const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
-    return `vec4<f32>(${(r / 255).toFixed(3)}, ${(g / 255).toFixed(3)}, ${(b / 255).toFixed(3)}, ${(a / 255).toFixed(3)})`;
+    return [r / 255, g / 255, b / 255, a / 255];
 }
 
 /**
@@ -1084,12 +1135,16 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 }
 
 struct Window { lo: f32, hi: f32 };
+struct Palette { data: array<vec4<f32>, {{NUM_COLORS}}> };
 
 @group(0) @binding(0) var t_raw: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read> p_map: array<f32>;
 // Contrast window as a uniform (not a shader-text constant) so dragging the slider
 // only needs a cheap queue.writeBuffer, not a shader recompile + new pipeline.
 @group(0) @binding(2) var<uniform> win: Window;
+// Per-class overlay colors as a uniform (not a shader-text constant) so recoloring
+// a class only needs a cheap queue.writeBuffer, not a shader recompile (see setColors).
+@group(0) @binding(3) var<uniform> palette: Palette;
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
@@ -1119,13 +1174,9 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     var alpha: f32 = 0.4;
     if (max_p < 0.0) { return vec4(raw.rgb, 1.0); }
 
-    var colors = array<vec4<f32>, {{NUM_COLORS}}>(
-        {{COLORS_ARRAY}}
-    );
-
     var overlay = vec4<f32>(0.0, 0.0, 0.0, alpha);
     if (best_class >= 0 && best_class < {{NUM_COLORS}}) {
-        overlay = colors[best_class];
+        overlay = palette.data[best_class];
         overlay.a = alpha;
     }
 

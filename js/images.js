@@ -1,4 +1,4 @@
-import { LABEL_COLORS, RF_CONFIG } from './config.js';
+import { RF_CONFIG } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
@@ -125,7 +125,7 @@ export async function addImage(state, file) {
     let backend = null;
   
     try {
-        backend = await initializeBackend(gpuCanvas, LABEL_COLORS)
+        backend = await initializeBackend(gpuCanvas, state.labelColors)
     } catch (err) {
         console.error(err);
         container.remove();
@@ -293,7 +293,7 @@ function getPixelsInRadius(cx, cy, radius, width, height) {
  * Applies the active brush at a mouse event's location: maps client coords to
  * image pixels, paints or erases the brush footprint on the label canvas, and
  * updates imgState.labels accordingly (dropping any labels the brush overwrites).
- * @param {Object} state - Shared app state; reads toolMode and currentClass.
+ * @param {Object} state - Shared app state; reads toolMode, currentClass, labelColors.
  * @param {Object} imgState - The target image's state entry.
  * @param {MouseEvent} e - The triggering mouse event.
  */
@@ -313,7 +313,7 @@ export function paint(state, imgState, e) {
     imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
 
     if (state.toolMode === 'paint') {
-        ctx.fillStyle = LABEL_COLORS[state.currentClass] ?? LABEL_COLORS[0];
+        ctx.fillStyle = state.labelColors[state.currentClass] ?? state.labelColors[0];
         pixels.forEach(p => ctx.fillRect(p.x, p.y, 1, 1));
         pixels.forEach(p => imgState.labels.push({ x: p.x, y: p.y, cls: state.currentClass }));
     } else if (state.toolMode === 'erase') {
