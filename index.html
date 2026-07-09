@@ -269,6 +269,15 @@
         isSpaceDown: false,
         isPanning: false,
         activePointerCount: 0,
+
+        // Save state for the .ilp export (Ctrl+S). dirty tracks whether there
+        // are changes since the last successful save (set on image/label
+        // mutations in images.js, cleared by saveIlpProject); ilpFileHandle is
+        // the FileSystemFileHandle from a prior showSaveFilePicker() call, kept
+        // so repeat saves overwrite the same file instead of re-prompting
+        // (Chromium only — unset in browsers without the File System Access API).
+        dirty: false,
+        ilpFileHandle: null,
     };
 
     function init() {
@@ -281,14 +290,101 @@
         setupTheme();
 
         // Guard against accidentally discarding work (loaded images + painted labels,
-        // none of which is persisted). Only prompt when there's actually something to
-        // lose — an empty app closes silently.
+        // none of which is persisted). Only prompt when there are actual unsaved
+        // changes — state.dirty tracks that precisely (see images.js's mutation
+        // points and saveIlpProject below), so this stays quiet right after a save.
         window.addEventListener('beforeunload', (e) => {
-            if (state.images.length > 0) {
+            if (state.dirty) {
                 e.preventDefault();
                 e.returnValue = '';
             }
         });
+
+        // Ctrl/Cmd+S saves the current project as an ilastik .ilp, regardless of
+        // focus (matches every other app's Save shortcut — even mid-rename of a
+        // class name). Runs before the "ignore while typing" hotkey guard below.
+        window.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                e.preventDefault();
+                saveIlpProject();
+            }
+        });
+    }
+
+    const ILP_PICKER_OPTS = {
+        types: [{ description: 'ilastik Project', accept: { 'application/octet-stream': ['.ilp'] } }],
+    };
+
+    /** Today's date as 'YYYYMMDD', for export filenames. */
+    function dateStamp() {
+        return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    }
+
+    /** Triggers a browser download of `blob` named `filename`. */
+    function downloadBlob(blob, filename) {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(link.href);
+    }
+
+    /**
+     * Writes `blob` to state.ilpFileHandle, prompting via showSaveFilePicker if
+     * there's no handle yet (Chromium only). Falls back to a plain download link
+     * in browsers without the File System Access API (Firefox, Safari), which
+     * re-prompts on every save since there's no persistent handle to reuse.
+     * Throws (with err.name === 'AbortError') if the user cancels the picker;
+     * clears state.ilpFileHandle and rethrows on any other write failure so the
+     * caller can retry once with a fresh picker (the old handle may be stale —
+     * revoked permission, or the file was moved/deleted).
+     */
+    async function writeIlpBlob(blob) {
+        if (!('showSaveFilePicker' in window)) {
+            downloadBlob(blob, `quantosaurus_${dateStamp()}.ilp`);
+            return;
+        }
+        if (!state.ilpFileHandle) {
+            state.ilpFileHandle = await window.showSaveFilePicker({
+                suggestedName: `quantosaurus_${dateStamp()}.ilp`,
+                ...ILP_PICKER_OPTS,
+            });
+        }
+        try {
+            const writable = await state.ilpFileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+        } catch (err) {
+            state.ilpFileHandle = null;
+            throw err;
+        }
+    }
+
+    /**
+     * Saves the current project as an ilastik .ilp — the Ctrl+S / "Export .ilp"
+     * button entry point. In Chromium, re-saves to the same file on repeat calls
+     * (via the File System Access API) instead of re-prompting every time.
+     */
+    async function saveIlpProject() {
+        if (state.images.length === 0) return;
+        const btn = document.getElementById('btnExportIlp');
+        btn.disabled = true;
+        try {
+            const blob = exportIlp(state, { classNames: state.classNames });
+            try {
+                await writeIlpBlob(blob);
+            } catch (err) {
+                if (err.name === 'AbortError') return; // user cancelled the picker
+                await writeIlpBlob(blob); // handle was likely stale — retry once with a fresh picker
+            }
+            state.dirty = false;
+        } catch (err) {
+            if (err.name === 'AbortError') return;
+            console.error(err);
+            alert(`ilastik project export failed: ${err.message}`);
+        } finally {
+            btn.disabled = false;
+        }
     }
 
     function setupTheme() {
@@ -596,35 +692,10 @@
             }
         };
 
-        // Export .ilp — reads class names from state.classNames (kept in sync
-        // with the class selector's contenteditable spans, see above).
-        const btnExportIlp = document.getElementById('btnExportIlp');
-        btnExportIlp.onclick = () => {
-            btnExportIlp.disabled = true;
-            try {
-                const blob = exportIlp(state, { classNames: state.classNames });
-                downloadBlob(blob, `quantosaurus_${dateStamp()}.ilp`);
-            } catch (err) {
-                console.error(err);
-                alert(`ilastik project export failed: ${err.message}`);
-            } finally {
-                btnExportIlp.disabled = false;
-            }
-        };
-    }
-
-    /** Today's date as 'YYYYMMDD', for export filenames. */
-    function dateStamp() {
-        return new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    }
-
-    /** Triggers a browser download of `blob` named `filename`. */
-    function downloadBlob(blob, filename) {
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = filename;
-        link.click();
-        URL.revokeObjectURL(link.href);
+        // Export .ilp — same entry point as Ctrl+S (see saveIlpProject above),
+        // reading class names from state.classNames (kept in sync with the
+        // class selector's contenteditable spans, see above).
+        document.getElementById('btnExportIlp').onclick = () => saveIlpProject();
     }
 
     init();

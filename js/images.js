@@ -155,6 +155,7 @@ export async function addImage(state, file) {
         _sidebarRow: row,
     };
     state.images.push(imgState);
+    state.dirty = true;
 
     // Pointer events unify mouse/touch/pen. Only the primary pointer paints
     // (the first touch contact, or the mouse) — a second simultaneous touch is
@@ -212,6 +213,7 @@ export function reorderImage(state, imgId, direction) {
 
     [state.images[idx], state.images[newIdx]] =
     [state.images[newIdx], state.images[idx]];
+    state.dirty = true; // changes export lane order
 
     const board = document.getElementById('canvas-board');
     const tiles = [...board.children];
@@ -253,6 +255,7 @@ export function deleteImage(state, imgId) {
     imgState.container.remove();
     imgState._sidebarRow.remove();
     state.images.splice(idx, 1);
+    state.dirty = true;
 
     if (labelCount > 0) scheduleTraining(state);
 
@@ -336,7 +339,8 @@ export function paint(state, imgState, e, radius) {
 
     const pixels = getPixelsInRadius(x, y, radius, imgState.width, imgState.height);
     if (pixels.length === 0) return;
-    
+    state.dirty = true;
+
     const pixelSet = new Set(pixels.map(p => `${p.x},${p.y}`));
     imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
 
