@@ -161,12 +161,14 @@ export async function addImage(state, file) {
         imgState._cachedRect = labelCanvas.getBoundingClientRect();
         state.isDrawing    = true;
         state.activeImageId = imgId;
-        paint(state, imgState, e);
+        const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
+        paint(state, imgState, e, radius);
     });
     labelCanvas.addEventListener('mousemove', (e) => {
         if (state.isSpaceDown) return
         if (state.isDrawing && state.activeImageId === imgId && state.toolMode !== 'grab') {
-            paint(state, imgState, e);
+            const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
+            paint(state, imgState, e, radius);
         }
     });
     labelCanvas.addEventListener('mouseup', () => {
@@ -258,13 +260,13 @@ export function deleteImage(state, imgId) {
  */
 function getPixelsInRadius(cx, cy, radius, width, height) {
     const pixels = [];
+    const inside = (x, y, w, h) => x >= 0 && x < w && y >= 0 && y < h
 
     // Exact 1-pixel brush
     if (radius === 1) {
-        if (cx >= 0 && cx < width && cy >= 0 && cy < height) {
-            pixels.push({ x: cx, y: cy });
+        if (inside(cx, cy, width, height)) {
+            return [{ x: cx, y: cy }];
         }
-        return pixels;
     }
 
     const rSq = radius * radius;
@@ -274,7 +276,7 @@ function getPixelsInRadius(cx, cy, radius, width, height) {
     for (let y = cy - rInt; y <= cy + rInt; y++) {
         for (let x = cx - rInt; x <= cx + rInt; x++) {
             // Keep it inside canvas bounds
-            if (x >= 0 && x < width && y >= 0 && y < height) {
+            if (inside(x, y, width, height)) {
                 const dx = x - cx;
                 const dy = y - cy;
 
@@ -314,13 +316,12 @@ export function redrawLabels(state, imgState) {
     }
 }
 
-export function paint(state, imgState, e) {
+export function paint(state, imgState, e, radius) {
     const rect   = imgState._cachedRect || imgState.labelCanvas.getBoundingClientRect();
     const scaleX = imgState.width  / rect.width;
     const scaleY = imgState.height / rect.height;
     const x      = Math.floor((e.clientX - rect.left) * scaleX);
     const y      = Math.floor((e.clientY - rect.top)  * scaleY);
-    const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
     const ctx    = imgState.labelCanvas.getContext('2d');
 
     const pixels = getPixelsInRadius(x, y, radius, imgState.width, imgState.height);
