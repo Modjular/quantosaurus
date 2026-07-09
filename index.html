@@ -127,6 +127,7 @@
     import { setupCamera } from './js/camera.js';
     import { FlatRandomForest } from './js/rf.js';
     import { scheduleTraining } from './js/training.js'
+    import { loadSettings, saveSettings } from './js/settings.js';
 
     const state = {
         // Images — ordered array; visual order == export order
@@ -139,6 +140,11 @@
         // UI (mutable), seeded from config defaults. The class *count* comes from
         // rf.numClasses; colors are a separate concern that can change at runtime.
         labelColors: [...DEFAULT_LABEL_COLORS],
+
+        // Per-class display names, indexed by class. Like labelColors, this is a
+        // UI-owned presentation concern (renamable at runtime, persisted to
+        // localStorage); the class *count* still comes from rf.numClasses.
+        classNames: Array.from({ length: RF_CONFIG.numClasses }, (_, i) => `Class ${i + 1}`),
 
         // Drawing / Tools
         currentClass: 0,
@@ -159,9 +165,20 @@
         const viewport = document.getElementById('viewport');
         const board    = document.getElementById('canvas-board');
         setupCamera(state, viewport, board);
+        loadSettings(state);   // restore persisted colors/names before the class UI renders
         setupUI();
         setupFeedback();
         setupTheme();
+
+        // Guard against accidentally discarding work (loaded images + painted labels,
+        // none of which is persisted). Only prompt when there's actually something to
+        // lose — an empty app closes silently.
+        window.addEventListener('beforeunload', (e) => {
+            if (state.images.length > 0) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
     }
 
     function setupTheme() {
@@ -324,11 +341,17 @@
                 return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
-                <span contenteditable>Class ${index + 1}</span>
+                <span contenteditable data-class="${index}"></span>
                 <div class="class-stat-badge" id="stat-class-${index}">0</div>
             </div>
         `;
             }).join('');
+
+        // Fill class names via textContent (not innerHTML above) so persisted, user-
+        // supplied names can't inject markup into the class selector.
+        document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
+            span.textContent = state.classNames[parseInt(span.dataset.class, 10)];
+        });
 
         // Class selector interaction
         document.querySelectorAll('.class-item').forEach(el => {
@@ -336,6 +359,20 @@
                 document.querySelectorAll('.class-item').forEach(i => i.classList.remove('active'));
                 el.classList.add('active');
                 state.currentClass = parseInt(el.dataset.class, 10);
+            };
+        });
+
+        // Class rename — persist on blur. Clicking into the name to edit shouldn't
+        // interfere with class selection (the item's onclick just marks it active).
+        // An empty/whitespace name falls back to the default so we never render a
+        // blank label or persist "".
+        document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
+            span.onblur = () => {
+                const idx = parseInt(span.dataset.class, 10);
+                const name = span.textContent.trim();
+                state.classNames[idx] = name || `Class ${idx + 1}`;
+                span.textContent = state.classNames[idx];
+                saveSettings(state);
             };
         });
 
@@ -351,6 +388,7 @@
                     img.backend.setColors(state.labelColors);
                     redrawLabels(state, img);
                 });
+                saveSettings(state);
             };
         });
 
