@@ -471,6 +471,7 @@
         document.querySelector('.class-selector').innerHTML =
             Array.from({ length: state.rf.numClasses }, (_, index) => {
                 const color = state.labelColors[index] ?? '#888888';
+                const name = state.labelNames[index] ?? `Class ${index + 1}`;
                 return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
@@ -550,6 +551,15 @@
             }
         });
 
+        // Class name edits — persist into state.labelNames on blur, mirroring
+        // how the color pickers persist into state.labelColors, so exports
+        // (e.g. exportIlp) can read live names straight off state.
+        document.querySelectorAll('.class-item span[contenteditable]').forEach((span, idx) => {
+            span.onblur = () => {
+                state.labelNames[idx] = span.textContent.trim() || `Class ${idx + 1}`;
+            };
+        });
+
         // Export
         const btnExport = document.getElementById('btnExportAll');
         btnExport.onclick = async () => {
@@ -574,12 +584,7 @@
 
                 if (!zipBlob) throw Error('zip is empty, nothing to export')
 
-                const link = document.createElement('a');
-                const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,"");
-                link.href = URL.createObjectURL(zipBlob);
-                link.download = `ilastik_export_${yyyymmdd}.zip`;
-                link.click();
-                URL.revokeObjectURL(link.href);
+                downloadBlob(zipBlob, `ilastik_export_${dateStamp()}.zip`);
 
                 alert('All images exported successfully!');
             } catch (err) {
@@ -591,28 +596,35 @@
             }
         };
 
-        // Export .ilp — reads the live (possibly user-edited) class-name text
-        // directly from the class selector, since state doesn't persist it.
+        // Export .ilp — reads class names from state.labelNames (kept in sync
+        // with the class selector's contenteditable spans, see above).
         const btnExportIlp = document.getElementById('btnExportIlp');
         btnExportIlp.onclick = () => {
+            btnExportIlp.disabled = true;
             try {
-                const labelNames = Array.from(
-                    document.querySelectorAll('.class-item span[contenteditable]')
-                ).map(el => el.textContent.trim());
-
-                const blob = exportIlp(state, { labelNames });
-
-                const link = document.createElement('a');
-                const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,"");
-                link.href = URL.createObjectURL(blob);
-                link.download = `quantosaurus_${yyyymmdd}.ilp`;
-                link.click();
-                URL.revokeObjectURL(link.href);
+                const blob = exportIlp(state, { labelNames: state.labelNames });
+                downloadBlob(blob, `quantosaurus_${dateStamp()}.ilp`);
             } catch (err) {
                 console.error(err);
                 alert(`ilastik project export failed: ${err.message}`);
+            } finally {
+                btnExportIlp.disabled = false;
             }
         };
+    }
+
+    /** Today's date as 'YYYYMMDD', for export filenames. */
+    function dateStamp() {
+        return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    }
+
+    /** Triggers a browser download of `blob` named `filename`. */
+    function downloadBlob(blob, filename) {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(link.href);
     }
 
     init();

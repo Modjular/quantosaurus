@@ -300,7 +300,9 @@ function writeGroupStorage(sink, entries) {
 // ---------------------------------------------------------------------------
 function writeNode(sink, node) {
   if (node.kind === 'dataset') {
-    const dataAddr = node.data.length > 0 ? sink.alloc(node.data.length) : 0;
+    // Per spec, an unallocated contiguous dataset's address is UNDEF, not 0
+    // (0 is a real, meaningful file offset — the superblock's own location).
+    const dataAddr = node.data.length > 0 ? sink.alloc(node.data.length) : UNDEF;
     if (node.data.length > 0) sink.put(dataAddr, node.data);
     const messages = [
       { type: 0x0003, body: node.dtBody },
@@ -351,7 +353,10 @@ function serializeHdf5(rootChildren) {
   sink.u64(sbAddr + 80, rootStab.btreeAddr); // scratch-pad: B-tree address
   sink.u64(sbAddr + 88, rootStab.heapAddr); // scratch-pad: local heap address
 
-  return sink.buf.slice(0, sink.len); // exact-length copy, safe to hand to a Blob
+  // A zero-copy view trimmed to the exact byte length — Blob() (the only real
+  // caller) reads an ArrayBufferView's byte range directly, so there's no need
+  // to copy out of the (possibly over-allocated, post-growth) sink buffer here.
+  return sink.buf.subarray(0, sink.len);
 }
 
 // ---------------------------------------------------------------------------
@@ -365,13 +370,12 @@ function bytesFixed(bytes) {
   data.set(bytes.subarray(0, Math.min(bytes.length, size)));
   return { size, data };
 }
-function dsStr(name, s) {
-  const { size, data } = bytesFixed(textEncoder.encode(s));
-  return { kind: 'dataset', name, dtBody: dtStr(size), dims: [], data };
-}
 function dsBytes(name, bytes) {
   const { size, data } = bytesFixed(bytes);
   return { kind: 'dataset', name, dtBody: dtStr(size), dims: [], data };
+}
+function dsStr(name, s) {
+  return dsBytes(name, textEncoder.encode(s));
 }
 function dsStrArray(name, list) {
   const encoded = list.map((s) => textEncoder.encode(s));
@@ -438,6 +442,22 @@ function strAttr(name, s) {
 // ilastik-specific helpers
 // ---------------------------------------------------------------------------
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Formats a Date like Python's `time.ctime()` (e.g. "Wed Aug 23 10:29:38
+ * 2023"), matching the format real ilastik writes into its root `time`
+ * dataset. Purely informational either way — ilastik's project loader
+ * (`projectManager.py`) only ever writes this field, never parses it back.
+ */
+function formatCtime(date) {
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, ' ');
+  return `${WEEKDAYS[date.getDay()]} ${MONTHS[date.getMonth()]} ${day} ` +
+    `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${date.getFullYear()}`;
+}
+
 /** Axis-tags JSON, matching ilastik's `vigra.AxisTags`-derived format. */
 function makeAxistags(keys) {
   const typeFlags = { t: 4, z: 2, y: 2, x: 2, c: 1 };
@@ -449,6 +469,12 @@ function makeAxistags(keys) {
   }));
   return JSON.stringify({ axes }, null, 2);
 }
+
+// Precomputed once — every lane's Raw Data and every label block reuse the
+// same fixed axis-key sequence, so there's no need to re-run JSON.stringify
+// per image.
+const AXISTAGS_ZYX = makeAxistags('zyx');
+const AXISTAGS_YXC = makeAxistags('yxc');
 
 /** `[y0:y1,x0:x1,c0:c1]`, matching ilastik's `serializerUtils.slicingToString`. */
 function blockSliceString(y0, h, x0, w) {
@@ -478,6 +504,12 @@ function hexToRgb(hex) {
  * into many small chunk blocks as an internal storage-cache optimization —
  * that's not a format requirement, so one bounding-box block per lane is a
  * valid, much simpler equivalent.
+ *
+ * Trade-off: the block is sized by the *span* between labels, not their
+ * count, so two labels painted near opposite corners of a very large image
+ * allocate a block covering the whole image. A pixel-count cap isn't a safe
+ * fix here — it can't tell that case apart from a legitimately large, densely
+ * labeled image — so this is an accepted simplicity trade-off, not a bug.
  * @returns {{y0:number,x0:number,h:number,w:number,data:Uint8Array}|null}
  *   null when there are no labels for this image.
  */
@@ -496,13 +528,18 @@ function labelsToBlock(labels) {
   return { y0: minY, x0: minX, h, w, data };
 }
 
+/** Strips a trailing file extension, e.g. 'cells.tif' -> 'cells'. */
+export function stripExtension(name) {
+  return name.replace(/\.[^/.]+$/, '');
+}
+
 /** Builds one lane's `Input Data/infos/laneNNNN/Raw Data` group. */
 function buildRawDataGroup(img) {
-  const nickname = img.name.replace(/\.[^/.]+$/, '');
+  const nickname = stripExtension(img.name);
   return group('Raw Data', [
     dsStr('__class__', 'FilesystemDatasetInfo'),
     dsBoolScalar('allowLabels', true),
-    dsStr('axistags', makeAxistags('zyx')),
+    dsStr('axistags', AXISTAGS_ZYX),
     dsStr('datasetId', crypto.randomUUID()),
     dsStr('display_mode', 'default'),
     // Browsers have no real filesystem path — filePath is the original
@@ -521,7 +558,7 @@ function buildLabelSetGroup(img, index) {
   const block = labelsToBlock(img.labels);
   if (!block) return group(labelSetName(index), []);
   const dataset = dsUint8(BLOCK_NAME, [block.h, block.w, 1], block.data, [
-    strAttr('axistags', makeAxistags('yxc')),
+    strAttr('axistags', AXISTAGS_YXC),
     strAttr('blockSlice', blockSliceString(block.y0, block.h, block.x0, block.w)),
   ]);
   return group(labelSetName(index), [dataset]);
@@ -606,7 +643,7 @@ export function buildIlpProject(state, options = {}) {
   const root = [
     dsStr('ilastikVersion', '1.4.0'),
     dsStr('workflowName', 'Pixel Classification'),
-    dsStr('time', options.time ?? new Date().toUTCString()),
+    dsStr('time', options.time ?? formatCtime(new Date())),
     dsInt64Scalar('currentApplet', 0),
     inputData,
     featureSelections,

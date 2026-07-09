@@ -1,6 +1,6 @@
 import { writeImage, setPipelinesBaseUrl } from './vendor/itk-wasm-image-io.min.js';
 import { STATS_LAYOUT } from './config.js';
-import { buildIlpProject } from './ilp.js';
+import { buildIlpProject, stripExtension } from './ilp.js';
 
 // itk-wasm fetches its WASM pipelines relative to this URL at runtime; point it at the
 // vendored copy instead of the jsDelivr CDN default.
@@ -25,7 +25,7 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
         const probs = await img.backend.downloadProbabilities();
         const w = img.width;
         const h = img.height;
-        const baseName = img.name ? img.name.replace(/\.[^/.]+$/, "") : `image_${i}`;
+        const baseName = img.name ? stripExtension(img.name) : `image_${i}`;
         const numClasses = (probs.length / (w * h));
 
         if (exportSeg) {
