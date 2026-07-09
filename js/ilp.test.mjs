@@ -102,12 +102,12 @@ function fakeState(images, overrides = {}) {
 // ---- Test 5: label names/colors come from options / state, with sane defaults ----
 {
     const img = fakeImage({ name: 'x.tif', width: 5, height: 5, labels: [] });
-    const bytes = buildIlpProject(fakeState([img]), { labelNames: ['Microglia', 'Background'] });
-    assert(containsAscii(bytes, 'Microglia') && containsAscii(bytes, 'Background'), 'custom labelNames are used');
+    const bytes = buildIlpProject(fakeState([img]), { classNames: ['Microglia', 'Background'] });
+    assert(containsAscii(bytes, 'Microglia') && containsAscii(bytes, 'Background'), 'custom classNames are used');
 
     const defaultBytes = buildIlpProject(fakeState([img]));
     assert(containsAscii(defaultBytes, 'Class 1') && containsAscii(defaultBytes, 'Class 2'),
-        'default labelNames fall back to "Class N"');
+        'default classNames fall back to "Class N"');
 }
 
 // ---- Test 6: group-capacity guard throws instead of silently corrupting ----

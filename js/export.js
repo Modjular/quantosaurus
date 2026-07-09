@@ -242,7 +242,7 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
  * desktop ilastik computes itself, so ilastik retrains from the exported
  * labels on open instead (see js/ilp.js for the full rationale).
  * @param {Object} state - Shared app state.
- * @param {Object} [options] - Forwarded to buildIlpProject (e.g. labelNames).
+ * @param {Object} [options] - Forwarded to buildIlpProject (e.g. classNames).
  * @returns {Blob} The `.ilp` file, ready for download.
  */
 export function exportIlp(state, options = {}) {

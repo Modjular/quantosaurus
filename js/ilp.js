@@ -601,7 +601,7 @@ function buildClassifierFactoryPickle(numTrees) {
  * @param {Object} state - Shared app state (state.images, state.rf,
  *   state.labelColors).
  * @param {Object} [options]
- * @param {Array<string>} [options.labelNames] - Per-class display names;
+ * @param {Array<string>} [options.classNames] - Per-class display names;
  *   defaults to "Class 1", "Class 2", ....
  * @param {string} [options.time] - Overrides the project's saved timestamp
  *   (mainly for deterministic tests); defaults to the current time.
@@ -611,7 +611,7 @@ export function buildIlpProject(state, options = {}) {
   const images = state.images ?? [];
   const numClasses = state.rf?.numClasses ?? RF_CONFIG.numClasses;
   const numTrees = state.rf?.numTrees ?? RF_CONFIG.numTrees;
-  const labelNames = options.labelNames ?? Array.from({ length: numClasses }, (_, i) => `Class ${i + 1}`);
+  const classNames = options.classNames ?? Array.from({ length: numClasses }, (_, i) => `Class ${i + 1}`);
   const colorRows = Array.from({ length: numClasses }, (_, i) => hexToRgb(state.labelColors?.[i]));
 
   const inputData = group('Input Data', [
@@ -632,7 +632,7 @@ export function buildIlpProject(state, options = {}) {
 
   const pixelClassification = group('PixelClassification', [
     dsStr('StorageVersion', '0.1'),
-    dsStrArray('LabelNames', labelNames),
+    dsStrArray('classNames', classNames),
     dsInt32Matrix('LabelColors', colorRows),
     dsInt32Matrix('PmapColors', colorRows),
     group('Bookmarks', []),

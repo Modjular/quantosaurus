@@ -471,7 +471,7 @@
         document.querySelector('.class-selector').innerHTML =
             Array.from({ length: state.rf.numClasses }, (_, index) => {
                 const color = state.labelColors[index] ?? '#888888';
-                const name = state.labelNames[index] ?? `Class ${index + 1}`;
+                const name = state.classNames[index] ?? `Class ${index + 1}`;
                 return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
@@ -551,12 +551,12 @@
             }
         });
 
-        // Class name edits — persist into state.labelNames on blur, mirroring
+        // Class name edits — persist into state.classNames on blur, mirroring
         // how the color pickers persist into state.labelColors, so exports
         // (e.g. exportIlp) can read live names straight off state.
         document.querySelectorAll('.class-item span[contenteditable]').forEach((span, idx) => {
             span.onblur = () => {
-                state.labelNames[idx] = span.textContent.trim() || `Class ${idx + 1}`;
+                state.classNames[idx] = span.textContent.trim() || `Class ${idx + 1}`;
             };
         });
 
@@ -596,13 +596,13 @@
             }
         };
 
-        // Export .ilp — reads class names from state.labelNames (kept in sync
+        // Export .ilp — reads class names from state.classNames (kept in sync
         // with the class selector's contenteditable spans, see above).
         const btnExportIlp = document.getElementById('btnExportIlp');
         btnExportIlp.onclick = () => {
             btnExportIlp.disabled = true;
             try {
-                const blob = exportIlp(state, { labelNames: state.labelNames });
+                const blob = exportIlp(state, { classNames: state.classNames });
                 downloadBlob(blob, `quantosaurus_${dateStamp()}.ilp`);
             } catch (err) {
                 console.error(err);
