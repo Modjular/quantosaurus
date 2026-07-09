@@ -3,6 +3,16 @@
 // the class-selector UI reads it off state.rf.numClasses, and the backends bake
 // it into their inference/composite shaders. Colors are a separate, presentation
 // concern (see DEFAULT_LABEL_COLORS) and must not be treated as the count.
+//
+// Fixed at 4 deliberately, not just as a default: WebGL2 packs every class's
+// probability into a single RGBA32F texture (one channel per class — see
+// `probTexture` in backends/webgl2.js), and its composite/RF-inference shaders
+// unpack it as a hardcoded `float p_arr[4] = float[](probs.r, probs.g, probs.b,
+// probs.a)` (webgl2.js ~line 964; see also the "RGBA channel cap" comment on the
+// RF-inference votes array ~line 895). WebGPU's probability buffer has no such
+// limit, but going past 4 classes would need a WebGL2 multi-render-target
+// refactor (multiple probability textures + a gather step) to raise this cap —
+// not undertaken here since 4 covers the vast majority of use cases.
 export const NUM_CLASSES = 4;
 
 // Default per-class overlay colors, indexed by class. These seed the mutable

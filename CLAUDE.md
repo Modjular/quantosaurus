@@ -28,6 +28,7 @@ Node — no framework, no install step, no test runner config:
 node js/rf.test.mjs               # FlatRandomForest: training, flat-buffer layout, Gini/purity
 node js/io.test.mjs               # intensityToRGBA normalization
 node js/backends/webgl2.test.mjs  # CCL + stats reference implementations
+node js/config.test.mjs           # NUM_CLASSES / DEFAULT_LABEL_COLORS invariants
 ```
 
 Each test file is self-contained: an `assert(cond, msg)` helper logs `ok`/`FAIL` lines and the script exits
@@ -81,7 +82,14 @@ WebGPU compute pipelines are cached per-image in `_pipelineCache` keyed by a sta
 image-lifetime constants (width/height/label count/scale) are baked into the WGSL; anything that varies
 per-call (e.g. label count for stats) goes through a uniform buffer instead so passes compile once and are
 reused across retrains rather than rebuilt on every call. Preserve this when touching either backend — don't
-reintroduce per-call shader recompilation on hot paths like dragging the contrast slider.
+reintroduce per-call shader recompilation on hot paths like dragging the contrast slider or picking a class
+color (`setColors`, like `setWindow`, only writes a uniform and repaints — no recompile).
+
+`NUM_CLASSES` (`js/config.js`) is fixed at 4, not just as a default. WebGL2 packs every class's probability
+into a single RGBA32F texture, one channel per class, and its shaders unpack it as a hardcoded 4-element
+array (`webgl2.js`'s composite/RF-inference passes). WebGPU's probability buffer has no such limit, but
+raising the class count past 4 would need a WebGL2 multi-render-target refactor (multiple probability
+textures + a gather step) — don't bump `NUM_CLASSES` without doing that first.
 
 ### `FlatRandomForest` (`js/rf.js`)
 

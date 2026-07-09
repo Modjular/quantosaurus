@@ -315,12 +315,15 @@
         // Setup class selector with stat badges. The forest owns the class count
         // (rf.numClasses); colors come from the mutable state.labelColors palette,
         // falling back to neutral gray if fewer colors than classes are defined.
+        // The color swatch is a native <input type="color">, which always emits
+        // #rrggbb hex — state.labelColors entries are expected to stay hex from
+        // this point on so they round-trip through the picker cleanly.
         document.querySelector('.class-selector').innerHTML =
             Array.from({ length: state.rf.numClasses }, (_, index) => {
                 const color = state.labelColors[index] ?? '#888888';
                 return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
-                <div class="color-box" style="background:${color};"></div>
+                <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
                 <span contenteditable>Class ${index + 1}</span>
                 <div class="class-stat-badge" id="stat-class-${index}">0</div>
             </div>
@@ -333,6 +336,18 @@
                 document.querySelectorAll('.class-item').forEach(i => i.classList.remove('active'));
                 el.classList.add('active');
                 state.currentClass = parseInt(el.dataset.class, 10);
+            };
+        });
+
+        // Class color pickers — recolor live as the user drags in the native
+        // picker (oninput, not change), mirroring how the contrast slider drives
+        // setWindow on every tick; setColors is just as cheap (uniform write + repaint).
+        document.querySelectorAll('.color-box').forEach(input => {
+            input.onclick = (e) => e.stopPropagation(); // don't also re-select the class
+            input.oninput = (e) => {
+                const idx = parseInt(input.dataset.class, 10);
+                state.labelColors[idx] = e.target.value;
+                state.images.forEach(img => img.backend.setColors(state.labelColors));
             };
         });
 
