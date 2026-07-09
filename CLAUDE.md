@@ -143,9 +143,9 @@ needs CORS to fetch the vendored WASM even same-origin — running on the main t
 
 ## Pull Request Template
 
-- Always include a **Summary** section that covers all commits in the PR in one concise paragraph — not a
+- Always include a section titled **Summary** that covers all commits in the PR in one concise paragraph — not a
   per-commit bullet list.
-- Always include a **Notes** section that mentions any bugs of interest fixed along the way (incidental fixes
+- Always include a section titled **Notes** that mentions any bugs of interest fixed along the way (incidental fixes
   outside the PR's main purpose) and any recommended areas of improvement that were noticed but not touched.
 
 ## Conventions
