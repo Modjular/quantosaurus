@@ -141,6 +141,13 @@ vendored third-party builds, not app code — don't hand-edit them. Both `io.js`
 `webWorker: false` on itk-wasm calls because the bundled worker runs from a `data:` URL (opaque origin) that
 needs CORS to fetch the vendored WASM even same-origin — running on the main thread sidesteps that.
 
+## Pull Request Template
+
+- Always include a **Summary** section that covers all commits in the PR in one concise paragraph — not a
+  per-commit bullet list.
+- Always include a **Notes** section that mentions any bugs of interest fixed along the way (incidental fixes
+  outside the PR's main purpose) and any recommended areas of improvement that were noticed but not touched.
+
 ## Conventions
 
 - No frameworks, no bundler, no TypeScript — plain ES modules loaded directly by the browser
