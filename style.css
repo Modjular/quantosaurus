@@ -443,22 +443,38 @@ button:disabled {
     outline: 1px solid var(--accent-primary);
     outline-offset: 1px;
 }
-/* The object count gets its own emphasized, class-colored circle — background and
-   text color are set inline per class by setClassCountColor (js/ui.js). */
-.class-count-circle {
-    margin-left: auto;
-    flex-shrink: 0;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
+.class-count {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 6px;
+    margin-left: auto;
+}
+/* A small class-colored swatch that doubles as a toggle button for that class's
+   on-canvas centroid markers — --dot-color is set inline per class (index.html). */
+.class-count-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--dot-color, currentColor);
+    background: var(--dot-color, currentColor);
+    padding: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: transform 0.1s ease;
+}
+.class-count-dot:hover {
+    transform: scale(1.15);
+}
+.class-count-dot.hidden {
+    background: transparent; /* hollow ring = markers currently hidden */
+}
+/* Plain text, not boxed, so 4+ digit counts never overflow a fixed container. */
+.class-count-number {
+    font-size: 11px;
     font-family: monospace;
-    font-size: 12px;
-    font-weight: 700;
-    line-height: 1;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    color: var(--text-dim);
+    min-width: 14px;
+    text-align: right;
 }
 
 /* ── Composite Structural Panels ──────────────────────────────────── */
@@ -641,6 +657,11 @@ canvas {
        pointer events fall through to the label canvas below. */
     z-index: 3;
     pointer-events: none;
+    /* Override the pixel-art `canvas` rule above: the gpu/label canvases want
+       nearest-neighbor so raw pixels/brush strokes stay crisp, but that upscales
+       this layer's anti-aliased marker rings into blocky, grainy edges on zoom.
+       Let the browser bilinear-smooth them instead. */
+    image-rendering: auto;
 }
 
 /* Dynamic Interactivity states */

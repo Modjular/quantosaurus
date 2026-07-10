@@ -222,12 +222,11 @@
 </div>
 <script type="module">
     import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
-    import { addFiles, redrawLabels, drawCentroids } from './js/images.js';
+    import { addFiles, redrawLabels, renderCentroids } from './js/images.js';
     import { zipImages } from './js/export.js';
     import { setupCamera } from './js/camera.js';
     import { FlatRandomForest } from './js/rf.js';
     import { scheduleTraining } from './js/training.js'
-    import { setClassCountColor } from './js/ui.js';
     import { loadSettings, saveSettings } from './js/settings.js';
 
     const state = {
@@ -246,6 +245,10 @@
         // UI-owned presentation concern (renamable at runtime, persisted to
         // localStorage); the class *count* still comes from rf.numClasses.
         classNames: Array.from({ length: RF_CONFIG.numClasses }, (_, i) => `Class ${i + 1}`),
+
+        // Whether each class's centroid markers are drawn on canvas (toggled via the
+        // class-item's swatch dot). Session-only — like camera/labels, not persisted.
+        classMarkersVisible: new Array(RF_CONFIG.numClasses).fill(true),
 
         // Drawing / Tools
         currentClass: 0,
@@ -467,7 +470,11 @@
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
                 <span contenteditable data-class="${index}"></span>
-                <div class="class-count-circle" id="stat-class-${index}">0</div>
+                <div class="class-count">
+                    <button type="button" class="class-count-dot" id="dot-class-${index}" data-class="${index}"
+                            title="Toggle markers on canvas" aria-pressed="true"></button>
+                    <span class="class-count-number" id="stat-class-${index}">0</span>
+                </div>
             </div>
         `;
             }).join('');
@@ -478,10 +485,10 @@
             span.textContent = state.classNames[parseInt(span.dataset.class, 10)];
         });
 
-        // Tint each class's count circle with its overlay color (contrasting text
-        // picked by luminance), matching the markers drawn over each object.
+        // Tint each class's swatch dot with its overlay color, matching the markers
+        // drawn over each object of that class.
         for (let i = 0; i < state.rf.numClasses; i++) {
-            setClassCountColor(i, state.labelColors[i] ?? '#888888');
+            document.getElementById(`dot-class-${i}`)?.style.setProperty('--dot-color', state.labelColors[i] ?? '#888888');
         }
 
         // Class selector interaction
@@ -494,6 +501,21 @@
         }
         document.querySelectorAll('.class-item').forEach(el => {
             el.onclick = () => selectClass(parseInt(el.dataset.class, 10));
+        });
+
+        // Swatch dot — toggles that class's on-canvas centroid markers. Cheap: just
+        // re-runs the existing 2D canvas redraw from already-cached detected objects,
+        // no GPU/backend call or stats re-download.
+        document.querySelectorAll('.class-count-dot').forEach(dot => {
+            dot.onclick = (e) => {
+                e.stopPropagation(); // don't also re-select the class
+                const idx = parseInt(dot.dataset.class, 10);
+                const visible = !state.classMarkersVisible[idx];
+                state.classMarkersVisible[idx] = visible;
+                dot.classList.toggle('hidden', !visible);
+                dot.setAttribute('aria-pressed', String(visible));
+                state.images.forEach(img => renderCentroids(state, img));
+            };
         });
 
         // Class rename — persist on blur. Clicking into the name to edit shouldn't
@@ -518,12 +540,12 @@
             input.oninput = (e) => {
                 const idx = parseInt(input.dataset.class, 10);
                 state.labelColors[idx] = e.target.value;
-                setClassCountColor(idx, e.target.value);
+                document.getElementById(`dot-class-${idx}`)?.style.setProperty('--dot-color', e.target.value);
                 state.images.forEach(img => {
                     img.backend.setColors(state.labelColors);
                     redrawLabels(state, img);
                     // Repaint cached centroid markers so they recolor live too.
-                    if (img._centroids) drawCentroids(state, img, img._centroids);
+                    renderCentroids(state, img);
                 });
                 saveSettings(state);
             };

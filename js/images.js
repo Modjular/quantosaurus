@@ -335,21 +335,33 @@ export function redrawLabels(state, imgState) {
 }
 
 /**
- * Redraws the centroid-marker overlay for one image: a class-colored circle over
- * each detected object's centroid, sized by area on a log scale (CENTROID_OVERLAY).
- * Fully clears and repaints, so passing empty per-class lists effectively clears it.
- * @param {Object} state - Shared app state; reads labelColors.
+ * Caches an image's freshly detected objects (grouped by class) without painting.
+ * Split out from renderCentroids so a marker-visibility toggle can repaint from the
+ * existing cache without a new stats download/retrain.
  * @param {Object} imgState - The target image's state entry.
  * @param {Array<Array<{cx: number, cy: number, area: number}>>} objectsByClass -
  *   Detected objects grouped by class index; each object carries its centroid and area.
  */
-export function drawCentroids(state, imgState, objectsByClass) {
-    // Cache the detected objects so a live color change can repaint the markers
-    // without waiting for the next retrain (mirrors redrawLabels for the brush layer).
+export function setCentroids(imgState, objectsByClass) {
     imgState._centroids = objectsByClass;
+}
+
+/**
+ * Redraws the centroid-marker overlay for one image from its cached objects
+ * (see setCentroids): a class-colored circle over each detected object's centroid,
+ * sized by area on a log scale (CENTROID_OVERLAY). Classes flagged hidden in
+ * state.classMarkersVisible are skipped. Fully clears and repaints on every call, so
+ * it's cheap to call after a color change or a visibility toggle — no GPU/stats work.
+ * @param {Object} state - Shared app state; reads labelColors, classMarkersVisible.
+ * @param {Object} imgState - The target image's state entry; reads the _centroids cache.
+ */
+export function renderCentroids(state, imgState) {
     const ctx = imgState.overlayCanvas.getContext('2d');
     ctx.clearRect(0, 0, imgState.width, imgState.height);
+    const objectsByClass = imgState._centroids;
+    if (!objectsByClass) return;
     for (let cls = 0; cls < objectsByClass.length; cls++) {
+        if (state.classMarkersVisible?.[cls] === false) continue;
         const objs = objectsByClass[cls];
         if (!objs?.length) continue;
         const color = state.labelColors[cls] ?? state.labelColors[0];

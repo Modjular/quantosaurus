@@ -44,25 +44,6 @@ export function updateClassStatBadges(counts) {
 }
 
 /**
- * Tints a class's count circle with that class's overlay color and picks a
- * contrasting text color by luminance, so the count stays readable on both light
- * (e.g. yellow) and dark class colors. Call at build time and whenever the class
- * color changes.
- * @param {number} index - Class index (matches #stat-class-${index}).
- * @param {string} hex - The class color as a #rrggbb string.
- */
-export function setClassCountColor(index, hex) {
-    const circle = document.getElementById(`stat-class-${index}`);
-    if (!circle) return;
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    circle.style.background = hex;
-    circle.style.color = luminance > 0.6 ? '#000' : '#fff';
-}
-
-/**
  * Builds the sidebar DOM row for one image. The controller supplies the
  * callbacks so this view stays decoupled from the image-lifecycle module.
  * @param {string} imgId - Image id, stored on the row's dataset.

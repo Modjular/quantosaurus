@@ -1,6 +1,6 @@
 import { MIN_LABELS_TO_TRAIN, NUM_FEATURES, RF_CONFIG, TRAIN_DEBOUNCE_MS, STATS_LAYOUT } from './config.js';
 import { updateClassStatBadges } from './ui.js';
-import { drawCentroids, clearCentroids } from './images.js';
+import { setCentroids, renderCentroids, clearCentroids } from './images.js';
 
 // Fields per object in the dense stats struct backends return from downloadStats
 // (see STATS_LAYOUT): label, area, total_intensity {lo,hi}, sum_x {lo,hi},
@@ -131,8 +131,9 @@ async function updateObjectCounts(state) {
             objectsByClass[cls] = objects;
             counts[cls] += objects.length;
         }
-        // Repaint this image's centroid markers from the freshly detected objects.
-        drawCentroids(state, img, objectsByClass);
+        // Cache and repaint this image's centroid markers from the freshly detected objects.
+        setCentroids(img, objectsByClass);
+        renderCentroids(state, img);
     }
 
     updateClassStatBadges(counts);
