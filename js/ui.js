@@ -17,6 +17,23 @@ export function updateStatus(state) {
                 : `${n} image${n !== 1 ? 's' : ''} loaded.`;
 }
 
+/**
+ * Toggles the global "training in progress" affordance: a progress cursor (via a
+ * body class) plus a status-line message. On turn-off it restores the normal
+ * image-count status. Gives feedback while the overlay/probabilities recompute,
+ * which is otherwise a silent await.
+ * @param {Object} state - Shared app state (for restoring the status text).
+ * @param {boolean} on - Whether training is currently running.
+ */
+export function setTrainingIndicator(state, on) {
+    document.body.classList.toggle('training', on);
+    if (on) {
+        document.getElementById('status').innerText = 'Training…';
+    } else {
+        updateStatus(state);
+    }
+}
+
 /** Enables/labels the "Export Loaded Images" button by image count. @param {Object} state */
 export function updateExportButtonCount(state) {
     const btn = document.getElementById('btnExportAll');
@@ -31,16 +48,76 @@ export function refreshEmptyState(state) {
         state.images.length === 0 ? '' : 'none';
 }
 
+// Handle of the in-flight count-up animation frame, so a new retrain (or a no-op
+// badge write) can cancel a still-running count-up before it clobbers fresh values.
+let _countupRaf = null;
+
+/** Cancels any in-flight count-up animation. */
+export function cancelCountup() {
+    if (_countupRaf !== null) {
+        cancelAnimationFrame(_countupRaf);
+        _countupRaf = null;
+    }
+}
+
 /**
- * Writes per-class detected-object counts into the class-selector badges.
+ * Writes per-class detected-object counts into the class-selector badges immediately
+ * (no animation). Used for the zeroed no-op case; also clears the loading state.
  * @param {Array<number>} counts - counts[classIdx] = objects for that class,
  *   summed across all loaded images.
  */
 export function updateClassStatBadges(counts) {
+    cancelCountup();
     counts.forEach((count, index) => {
         const badge = document.getElementById(`stat-class-${index}`);
-        if (badge) badge.textContent = count;
+        if (badge) {
+            badge.classList.remove('loading');
+            badge.textContent = count;
+        }
     });
+}
+
+/**
+ * Wipes the count badges to a pulsing "…" placeholder, signalling that fresh counts
+ * are being computed. Called the moment a retrain starts so the stale numbers don't
+ * just sit there until the new ones pop in.
+ */
+export function setClassBadgesLoading() {
+    cancelCountup();
+    document.querySelectorAll('.class-count-number').forEach(badge => {
+        badge.classList.add('loading');
+        badge.textContent = '…';
+    });
+}
+
+/**
+ * Animates each class badge counting up from 0 to its final value, as if the objects
+ * are being tallied live. Clears the loading placeholder. A single rAF loop drives all
+ * badges; a subsequent retrain cancels it via cancelCountup (see setClassBadgesLoading).
+ * @param {Array<number>} counts - Final per-class object counts.
+ * @param {{duration?: number}} [opts] - Animation duration in ms (default 500).
+ */
+export function animateClassStatBadges(counts, { duration = 500 } = {}) {
+    cancelCountup();
+    const badges = counts.map((_, i) => document.getElementById(`stat-class-${i}`));
+    badges.forEach(b => b && b.classList.remove('loading'));
+
+    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+    const start = performance.now();
+    const step = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        const eased = easeOutCubic(t);
+        counts.forEach((count, i) => {
+            const badge = badges[i];
+            if (badge) badge.textContent = Math.round(count * eased);
+        });
+        if (t < 1) {
+            _countupRaf = requestAnimationFrame(step);
+        } else {
+            _countupRaf = null;
+        }
+    };
+    _countupRaf = requestAnimationFrame(step);
 }
 
 /**

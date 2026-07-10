@@ -264,6 +264,10 @@
         isSpaceDown: false,
         isPanning: false,
         activePointerCount: 0,
+
+        // True while a debounced retrain+inference is running; drives the training
+        // progress cursor / status message (see setTrainingIndicator).
+        isTraining: false,
     };
 
     function init() {

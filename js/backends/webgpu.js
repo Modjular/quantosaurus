@@ -67,6 +67,12 @@ export class WebGpuBackend {
         // retrain rather than rebuilt per call. Cleared in allocateImage, where
         // those baked constants can change. A pass opts out by omitting a cacheKey.
         this._pipelineCache = new Map();
+
+        // Reusable CPU source for seeding the sparse stats buffer each computeStats call.
+        // Its only non-zero content is the min_intensity sentinel (0xFFFFFFFF) at a fixed
+        // stride, so it's identical every call — built once (grown on demand) instead of
+        // rebuilt per class per image. Never mutated by GPU work (write-only source).
+        this._statsInitData = null;
     }
 
     /**
@@ -410,11 +416,21 @@ export class WebGpuBackend {
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
         });
 
-        const initData = new Uint32Array(maxExpectedLabels * statsStructCount);
-        for (let i = 0; i < maxExpectedLabels; i++) {
-            initData[i * statsStructCount + STATS_LAYOUT.minIndex] = 0xFFFFFFFF; // min_intensity seeded to max u32
+        // Seed the sparse buffer: all fields 0 except min_intensity, which must start at
+        // max-u32 so the accumulate pass's atomicMin works. A freshly-created WebGPU buffer
+        // is already zero-filled by spec, so the only meaningful content is the sentinel —
+        // and that pattern is identical every call, so we build the source array once and
+        // reuse it (growing on demand) rather than rebuilding it per class per image.
+        const need = maxExpectedLabels * statsStructCount;
+        if (!this._statsInitData || this._statsInitData.length < need) {
+            this._statsInitData = new Uint32Array(need);
+            for (let i = 0; i < maxExpectedLabels; i++) {
+                this._statsInitData[i * statsStructCount + STATS_LAYOUT.minIndex] = 0xFFFFFFFF;
+            }
         }
-        this.device.queue.writeBuffer(this.statsBuffer, 0, initData);
+        // The uniform min-sentinel pattern means any prefix of the cached array is valid,
+        // so a size-bounded write covers a buffer smaller than the cache.
+        this.device.queue.writeBuffer(this.statsBuffer, 0, this._statsInitData, 0, need);
 
         const statsCode = STATS_ACCUMULATOR_SHADER
             .replace(/{{WIDTH}}/g, this.width)

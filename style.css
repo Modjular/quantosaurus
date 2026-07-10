@@ -476,6 +476,14 @@ button:disabled {
     min-width: 14px;
     text-align: right;
 }
+/* Pulsing "…" placeholder while fresh counts are being computed (setClassBadgesLoading). */
+.class-count-number.loading {
+    animation: badgePulse 1s ease-in-out infinite;
+}
+@keyframes badgePulse {
+    0%, 100% { opacity: 0.3; }
+    50%      { opacity: 0.8; }
+}
 
 /* ── Composite Structural Panels ──────────────────────────────────── */
 .heavy-panel {
@@ -673,6 +681,15 @@ body.space-down .label-canvas {
 body.mode-grab.panning .label-canvas,
 body.space-down.panning .label-canvas {
     cursor: grabbing !important;
+}
+
+/* While a retrain is running, signal "working" with a native progress cursor
+   (overriding the canvas crosshair too). See setTrainingIndicator. */
+body.training {
+    cursor: progress;
+}
+body.training .label-canvas {
+    cursor: progress !important;
 }
 
 /* ── Utilities & Cleanups ─────────────────────────────────────────── */

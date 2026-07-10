@@ -1,5 +1,5 @@
 import { MIN_LABELS_TO_TRAIN, NUM_FEATURES, RF_CONFIG, TRAIN_DEBOUNCE_MS, STATS_LAYOUT } from './config.js';
-import { updateClassStatBadges } from './ui.js';
+import { updateClassStatBadges, animateClassStatBadges, setClassBadgesLoading, setTrainingIndicator } from './ui.js';
 import { setCentroids, renderCentroids, clearCentroids } from './images.js';
 
 // Fields per object in the dense stats struct backends return from downloadStats
@@ -95,14 +95,26 @@ export async function trainAndPredictAll(state) {
         return;
     }
 
-    const { combinedX, yArray } = await buildTrainingDataset(state.images, totalLabels);
-    state.rf.train(combinedX, yArray, NUM_FEATURES);
+    // Give immediate feedback for the otherwise-silent await: a progress cursor +
+    // "Training…" status while the overlay recomputes, and the count badges wiped to
+    // a pulsing placeholder so the stale numbers don't just sit there.
+    state.isTraining = true;
+    setTrainingIndicator(state, true);
+    setClassBadgesLoading();
 
-    for (const img of state.images) {
-        await img.backend.runInference(state.rf);
+    try {
+        const { combinedX, yArray } = await buildTrainingDataset(state.images, totalLabels);
+        state.rf.train(combinedX, yArray, NUM_FEATURES);
+
+        for (const img of state.images) {
+            await img.backend.runInference(state.rf);
+        }
+
+        await updateObjectCounts(state);
+    } finally {
+        state.isTraining = false;
+        setTrainingIndicator(state, false);
     }
-
-    await updateObjectCounts(state);
 }
 
 /**
@@ -136,5 +148,5 @@ async function updateObjectCounts(state) {
         renderCentroids(state, img);
     }
 
-    updateClassStatBadges(counts);
+    animateClassStatBadges(counts);
 }
