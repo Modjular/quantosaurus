@@ -2,9 +2,10 @@
 
 # 🦖 Quantosaurus
 
-A free, open-source, browser-based pixel-classifier for counting cells in microscopy images — like [Ilastik](https://github.com/ilastik/ilastik), but runs entirely client-side on the GPU.
+An open-source, browser-based pixel-classifier for counting cells in microscopy images. Like [Ilastik](https://github.com/ilastik/ilastik), but without the download or setup. It's GPU-accelerated and completely client side.
 
-> **Just want to count cells?** Quantosaurus needs no account, install, or server — open `index.html` from a checkout (or a hosted copy, if your lab has one deployed) and load an image. Everything below is for people building, deploying, or extending the tool itself.
+> [!TIP]
+> **👋 Just here to count cells?** Head to https://quantosaur.us/. No signup, no downloads, no installation. Get started as soon as the page loads! Everything below is for people building, deploying, or extending the tool itself.
 
 ## About
 
@@ -21,6 +22,17 @@ Everything — filter computation, random-forest training/inference, and connect
 - Per-class object counts via GPU connected-component labeling
 - Segmentation, probability, and label exports
 - Figma-style canvas navigation (pan/zoom)
+
+### Planned
+
+- [ ] 3D support
+- [x] ~~Contrast sliders~~
+- [x] ~~`.ilp` export~~
+- [ ] `.ilp` import
+- [ ] Bulk inference.
+
+### Not Planned
+A good tool should do one thing well. There is no plan to add neural networks or LLMs or AI. There is no plan to go beyond the most common bio-imaging formats like tif or zarr (see the roadmap). Suggestions are still welcome but keep in mind the [Design Goals](#Design-goals).
 
 ### Architecture
 
@@ -78,19 +90,11 @@ Bug reports and pull requests are welcome. Before opening a PR:
 
 If a third-party library is truly necessary, vendor it into `js/vendor/` rather than introducing `npm`/a build step — see how `itk-wasm-image-io` and `jszip` are handled there.
 
-## Roadmap
-
-- [ ] 3D support
-- [x] ~~Contrast sliders~~
-- [ ] Export trained models as Ilastik-compatible `.ilp` files
-- [ ] Multi-file batching
-
 ## License
 
 [MIT](./LICENSE)
 
 ## Acknowledgments
 
-Built with 🦖 for Dr. Chen.
 Thanks to Ilastik for inspiration.
 Thanks to ITK-Wasm for file handling.
