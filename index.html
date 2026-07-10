@@ -72,7 +72,7 @@
             <p>Don't reach immediately for Quantosaurus; use the right tool for the job:</p>
             <ul class="cs-list">
                 <li><strong>Use ImageJ/Fiji when:</strong> You just need simple, global thresholding.</li>
-                <li><strong>Use Cellpose/StarDist when:</strong> You have highly complex, overlapping cells and the time/hardware to setup the models.</li>
+                <li><strong>Use Cellpose when:</strong> You have complex, overlapping cells and the time/hardware to setup a neural net.</li>
                 <li><strong>Use Quantosaurus when:</strong> Thresholding fails, but you don't want to code. You just want to paint a few examples, train a lightweight model, and get a count instantly.</li>
             </ul>
         </div>
@@ -590,9 +590,9 @@
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
                 <span contenteditable data-class="${index}"></span>
                 <div class="class-count">
-                    <button type="button" class="class-count-dot" id="dot-class-${index}" data-class="${index}"
-                            title="Toggle markers on canvas" aria-pressed="true"></button>
                     <span class="class-count-number" id="stat-class-${index}">0</span>
+                    <button type="button"class="class-count-dot" id="dot-class-${index}" data-class="${index}"
+                            title="Toggle markers on canvas" aria-pressed="true"></button>
                 </div>
             </div>
         `;
