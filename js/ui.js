@@ -7,6 +7,7 @@ export function syncUI(state) {
     updateStatus(state);
     updateExportButtonCount(state);
     refreshEmptyState(state);
+    updateSaveIndicator(state);
 }
 
 /** Updates the status line with the loaded-image count. @param {Object} state */
@@ -32,6 +33,34 @@ export function updateExportButtonCount(state) {
 export function refreshEmptyState(state) {
     document.getElementById('img-empty').style.display =
         state.images.length === 0 ? '' : 'none';
+}
+
+/**
+ * Reflects .ilp save status in the document title (a leading dot while
+ * there are unsaved changes, mirroring how every desktop editor marks an
+ * unsaved document) and the sidebar's save-status line: a dirty marker while
+ * state.dirty is true, a success checkmark once saved, nothing before any
+ * project exists. Call after anything that changes state.dirty.
+ * @param {Object} state
+ */
+export function updateSaveIndicator(state) {
+    const hasImages = state.images.length > 0;
+    const dirty = hasImages && state.dirty;
+
+    document.title = dirty ? '● Quantosaurus' : 'Quantosaurus';
+
+    const el = document.getElementById('ilpSaveStatus');
+    if (!el) return;
+    if (!hasImages) {
+        el.textContent = '';
+        el.className = 'save-status';
+    } else if (dirty) {
+        el.textContent = '● Unsaved changes';
+        el.className = 'save-status dirty';
+    } else {
+        el.textContent = '✓ Saved';
+        el.className = 'save-status saved';
+    }
 }
 
 /**

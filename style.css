@@ -654,6 +654,17 @@ body.space-down.panning .label-canvas {
     line-height: 1.5;
     margin: 0;
 }
+.save-status {
+    font-size: 11px;
+    font-weight: 600;
+    min-height: 14px; /* reserve space so surrounding controls don't shift when it's empty */
+}
+.save-status.dirty {
+    color: var(--text-muted);
+}
+.save-status.saved {
+    color: var(--accent-success);
+}
 hr.divider {
     border: none;
     border-top: 1px solid var(--border-subtle);

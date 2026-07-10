@@ -215,10 +215,11 @@
             <button id="btnExportIlp" class="btn-primary" disabled>
                 Export ilastik Project (.ilp)
             </button>
+            <div id="ilpSaveStatus" class="save-status"></div>
 
             <p class="hint">
                 Fully self-contained — images and labels are embedded in the file. Opens in
-                desktop ilastik, which retrains its own classifier on open.
+                desktop ilastik, which retrains its own classifier on open. Ctrl/Cmd+S to save.
             </p>
         </div>
 
@@ -237,6 +238,7 @@
     import { FlatRandomForest } from './js/rf.js';
     import { scheduleTraining } from './js/training.js'
     import { loadSettings, saveSettings } from './js/settings.js';
+    import { updateSaveIndicator } from './js/ui.js';
 
     const state = {
         // Images — ordered array; visual order == export order
@@ -365,6 +367,8 @@
      * button entry point. In Chromium, re-saves to the same file on repeat calls
      * (via the File System Access API) instead of re-prompting every time.
      */
+    const ILP_BUTTON_LABEL = 'Export ilastik Project (.ilp)';
+
     async function saveIlpProject() {
         if (state.images.length === 0) return;
         const btn = document.getElementById('btnExportIlp');
@@ -378,6 +382,12 @@
                 await writeIlpBlob(blob); // handle was likely stale — retry once with a fresh picker
             }
             state.dirty = false;
+            updateSaveIndicator(state);
+            // Transient confirmation on the button itself — mirrors btnExportAll's
+            // existing pattern of repurposing its own label during an operation
+            // ('Training…'/'Exporting…'), just for success instead of progress.
+            btn.innerText = 'Saved ✓';
+            setTimeout(() => { if (btn.innerText === 'Saved ✓') btn.innerText = ILP_BUTTON_LABEL; }, 1200);
         } catch (err) {
             if (err.name === 'AbortError') return;
             console.error(err);
