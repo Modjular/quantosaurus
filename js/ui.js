@@ -7,6 +7,7 @@ export function syncUI(state) {
     updateStatus(state);
     updateExportButtonCount(state);
     refreshEmptyState(state);
+    updateSaveIndicator(state);
 }
 
 /** Updates the status line with the loaded-image count. @param {Object} state */
@@ -40,6 +41,9 @@ export function updateExportButtonCount(state) {
     const n   = state.images.length;
     btn.disabled  = n === 0;
     btn.innerText = n > 0 ? `Export Loaded Images (${n})` : 'Export Loaded Images';
+
+    const ilpBtn = document.getElementById('btnExportIlp');
+    if (ilpBtn) ilpBtn.disabled = n === 0;
 }
 
 /** Shows/hides the image-list empty-state placeholder. @param {Object} state */
@@ -61,8 +65,35 @@ export function cancelCountup() {
 }
 
 /**
- * Writes per-class detected-object counts into the class-selector badges immediately
- * (no animation). Used for the zeroed no-op case; also clears the loading state.
+ * Reflects .ilp save status in the document title (a leading dot while
+ * there are unsaved changes, mirroring how every desktop editor marks an
+ * unsaved document) and the sidebar's save-status line: a dirty marker while
+ * state.dirty is true, a success checkmark once saved, nothing before any
+ * project exists. Call after anything that changes state.dirty.
+ * @param {Object} state
+ */
+export function updateSaveIndicator(state) {
+    const hasImages = state.images.length > 0;
+    const dirty = hasImages && state.dirty;
+
+    document.title = dirty ? '● Quantosaurus' : 'Quantosaurus';
+
+    const el = document.getElementById('ilpSaveStatus');
+    if (!el) return;
+    if (!hasImages) {
+        el.textContent = '';
+        el.className = 'save-status';
+    } else if (dirty) {
+        el.textContent = '● Unsaved changes';
+        el.className = 'save-status dirty';
+    } else {
+        el.textContent = '✓ Saved';
+        el.className = 'save-status saved';
+    }
+}
+
+/**
+ * Writes per-class detected-object counts into the class-selector badges.
  * @param {Array<number>} counts - counts[classIdx] = objects for that class,
  *   summed across all loaded images.
  */

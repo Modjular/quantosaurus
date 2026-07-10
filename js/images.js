@@ -2,7 +2,7 @@ import { RF_CONFIG, CENTROID_OVERLAY } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
-import { createImageRow, syncUI } from './ui.js';
+import { createImageRow, syncUI, updateSaveIndicator } from './ui.js';
 import { openContrastPopover } from './contrast.js';
 import { scheduleTraining } from './training.js';
 
@@ -163,6 +163,7 @@ export async function addImage(state, file) {
         _sidebarRow: row,
     };
     state.images.push(imgState);
+    state.dirty = true;
 
     // Pointer events unify mouse/touch/pen. Only the primary pointer paints
     // (the first touch contact, or the mouse) — a second simultaneous touch is
@@ -220,6 +221,8 @@ export function reorderImage(state, imgId, direction) {
 
     [state.images[idx], state.images[newIdx]] =
     [state.images[newIdx], state.images[idx]];
+    state.dirty = true; // changes export lane order
+    updateSaveIndicator(state);
 
     const board = document.getElementById('canvas-board');
     const tiles = [...board.children];
@@ -261,6 +264,7 @@ export function deleteImage(state, imgId) {
     imgState.container.remove();
     imgState._sidebarRow.remove();
     state.images.splice(idx, 1);
+    state.dirty = true;
 
     if (labelCount > 0) scheduleTraining(state);
 
@@ -401,7 +405,11 @@ export function paint(state, imgState, e, radius) {
 
     const pixels = getPixelsInRadius(x, y, radius, imgState.width, imgState.height);
     if (pixels.length === 0) return;
-    
+    // Only touch the DOM on the false->true transition — paint() is the
+    // hottest path in the app (fires on every mousemove while dragging), and
+    // dirty stays true for the rest of a typical painting session.
+    if (!state.dirty) { state.dirty = true; updateSaveIndicator(state); }
+
     const pixelSet = new Set(pixels.map(p => `${p.x},${p.y}`));
     imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));
 

@@ -1,5 +1,6 @@
 import { writeImage, setPipelinesBaseUrl } from './vendor/itk-wasm-image-io.min.js';
 import { STATS_LAYOUT } from './config.js';
+import { buildIlpProject, stripExtension } from './ilp.js';
 
 // itk-wasm fetches its WASM pipelines relative to this URL at runtime; point it at the
 // vendored copy instead of the jsDelivr CDN default.
@@ -24,7 +25,7 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
         const probs = await img.backend.downloadProbabilities();
         const w = img.width;
         const h = img.height;
-        const baseName = img.name ? img.name.replace(/\.[^/.]+$/, "") : `image_${i}`;
+        const baseName = img.name ? stripExtension(img.name) : `image_${i}`;
         const numClasses = (probs.length / (w * h));
 
         if (exportSeg) {
@@ -227,4 +228,25 @@ export async function zipImages(images, exportSeg, exportProb, progressCallback)
             worker.postMessage(filesToZip, transferables);
         });
     }
+}
+
+/**
+ * Builds a downloadable, fully self-contained ilastik Pixel Classification
+ * project (`.ilp`) reflecting the current app state: one lane per loaded
+ * image with its raw pixels embedded directly in the file (ilastik's
+ * "Project Internal" storage — browsers can't expose a real filesystem path
+ * for an uploaded file, so this avoids depending on the original image files
+ * still being around), the user's painted labels as one bounding-box block
+ * per image, label names/colors, and a starter feature selection. No trained
+ * classifier is embedded — Quantosaurus trains on a custom on-GPU feature
+ * bank that doesn't correspond to the vigra features desktop ilastik
+ * computes itself, so ilastik retrains from the exported labels on open
+ * instead (see js/ilp.js for the full rationale).
+ * @param {Object} state - Shared app state.
+ * @param {Object} [options] - Forwarded to buildIlpProject (e.g. classNames).
+ * @returns {Blob} The `.ilp` file, ready for download.
+ */
+export function exportIlp(state, options = {}) {
+    const bytes = buildIlpProject(state, options);
+    return new Blob([bytes], { type: 'application/octet-stream' });
 }
