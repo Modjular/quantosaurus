@@ -72,7 +72,7 @@
             <p>Don't reach immediately for Quantosaurus; use the right tool for the job:</p>
             <ul class="cs-list">
                 <li><strong>Use ImageJ/Fiji when:</strong> You just need simple, global thresholding.</li>
-                <li><strong>Use Cellpose/StarDist when:</strong> You have highly complex, overlapping cells and the time/hardware to setup the models.</li>
+                <li><strong>Use Cellpose when:</strong> You have complex, overlapping cells and the time/hardware to setup a neural net.</li>
                 <li><strong>Use Quantosaurus when:</strong> Thresholding fails, but you don't want to code. You just want to paint a few examples, train a lightweight model, and get a count instantly.</li>
             </ul>
         </div>
@@ -232,7 +232,7 @@
 </div>
 <script type="module">
     import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
-    import { addFiles, redrawLabels } from './js/images.js';
+    import { addFiles, redrawLabels, renderCentroids } from './js/images.js';
     import { zipImages, exportIlp } from './js/export.js';
     import { setupCamera } from './js/camera.js';
     import { FlatRandomForest } from './js/rf.js';
@@ -257,6 +257,10 @@
         // localStorage); the class *count* still comes from rf.numClasses.
         classNames: Array.from({ length: RF_CONFIG.numClasses }, (_, i) => `Class ${i + 1}`),
 
+        // Whether each class's centroid markers are drawn on canvas (toggled via the
+        // class-item's swatch dot). Session-only — like camera/labels, not persisted.
+        classMarkersVisible: new Array(RF_CONFIG.numClasses).fill(true),
+
         // Drawing / Tools
         currentClass: 0,
         isDrawing: false,
@@ -272,6 +276,9 @@
         isPanning: false,
         activePointerCount: 0,
 
+        // True while a debounced retrain+inference is running; drives the training
+        // progress cursor / status message (see setTrainingIndicator).
+        isTraining: false,
         // Save state for the .ilp export (Ctrl+S). dirty tracks whether there
         // are changes since the last successful save (set on image/label
         // mutations in images.js, cleared by saveIlpProject); ilpFileHandle is
@@ -582,7 +589,11 @@
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
                 <span contenteditable data-class="${index}"></span>
-                <div class="class-stat-badge" id="stat-class-${index}">0</div>
+                <div class="class-count">
+                    <span class="class-count-number" id="stat-class-${index}">0</span>
+                    <button type="button"class="class-count-dot" id="dot-class-${index}" data-class="${index}"
+                            title="Toggle markers on canvas" aria-pressed="true"></button>
+                </div>
             </div>
         `;
             }).join('');
@@ -592,6 +603,12 @@
         document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
             span.textContent = state.classNames[parseInt(span.dataset.class, 10)];
         });
+
+        // Tint each class's swatch dot with its overlay color, matching the markers
+        // drawn over each object of that class.
+        for (let i = 0; i < state.rf.numClasses; i++) {
+            document.getElementById(`dot-class-${i}`)?.style.setProperty('--dot-color', state.labelColors[i] ?? '#888888');
+        }
 
         // Class selector interaction
         function selectClass(index) {
@@ -603,6 +620,21 @@
         }
         document.querySelectorAll('.class-item').forEach(el => {
             el.onclick = () => selectClass(parseInt(el.dataset.class, 10));
+        });
+
+        // Swatch dot — toggles that class's on-canvas centroid markers. Cheap: just
+        // re-runs the existing 2D canvas redraw from already-cached detected objects,
+        // no GPU/backend call or stats re-download.
+        document.querySelectorAll('.class-count-dot').forEach(dot => {
+            dot.onclick = (e) => {
+                e.stopPropagation(); // don't also re-select the class
+                const idx = parseInt(dot.dataset.class, 10);
+                const visible = !state.classMarkersVisible[idx];
+                state.classMarkersVisible[idx] = visible;
+                dot.classList.toggle('hidden', !visible);
+                dot.setAttribute('aria-pressed', String(visible));
+                state.images.forEach(img => renderCentroids(state, img));
+            };
         });
 
         // Class rename — persist on blur. Clicking into the name to edit shouldn't
@@ -627,9 +659,12 @@
             input.oninput = (e) => {
                 const idx = parseInt(input.dataset.class, 10);
                 state.labelColors[idx] = e.target.value;
+                document.getElementById(`dot-class-${idx}`)?.style.setProperty('--dot-color', e.target.value);
                 state.images.forEach(img => {
                     img.backend.setColors(state.labelColors);
                     redrawLabels(state, img);
+                    // Repaint cached centroid markers so they recolor live too.
+                    renderCentroids(state, img);
                 });
                 saveSettings(state);
             };
@@ -646,7 +681,7 @@
                 setBrushSize(parseInt(brushRange.value, 10) - 1);
             } else if (e.key === ']') {
                 setBrushSize(parseInt(brushRange.value, 10) + 1);
-            } else if (e.key === 'p' || e.key === 'P') {
+            } else if (e.key === 'p' || e.key === 'P' || e.key === 'b' || e.key === 'B') {
                 selectTool('paint');
             } else if (e.key === 'e' || e.key === 'E') {
                 selectTool('erase');

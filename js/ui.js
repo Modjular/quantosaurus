@@ -18,6 +18,23 @@ export function updateStatus(state) {
                 : `${n} image${n !== 1 ? 's' : ''} loaded.`;
 }
 
+/**
+ * Toggles the global "training in progress" affordance: a progress cursor (via a
+ * body class) plus a status-line message. On turn-off it restores the normal
+ * image-count status. Gives feedback while the overlay/probabilities recompute,
+ * which is otherwise a silent await.
+ * @param {Object} state - Shared app state (for restoring the status text).
+ * @param {boolean} on - Whether training is currently running.
+ */
+export function setTrainingIndicator(state, on) {
+    document.body.classList.toggle('training', on);
+    if (on) {
+        document.getElementById('status').innerText = 'Training…';
+    } else {
+        updateStatus(state);
+    }
+}
+
 /** Enables/labels the "Export Loaded Images" button by image count. @param {Object} state */
 export function updateExportButtonCount(state) {
     const btn = document.getElementById('btnExportAll');
@@ -33,6 +50,18 @@ export function updateExportButtonCount(state) {
 export function refreshEmptyState(state) {
     document.getElementById('img-empty').style.display =
         state.images.length === 0 ? '' : 'none';
+}
+
+// Handle of the in-flight count-up animation frame, so a new retrain (or a no-op
+// badge write) can cancel a still-running count-up before it clobbers fresh values.
+let _countupRaf = null;
+
+/** Cancels any in-flight count-up animation. */
+export function cancelCountup() {
+    if (_countupRaf !== null) {
+        cancelAnimationFrame(_countupRaf);
+        _countupRaf = null;
+    }
 }
 
 /**
@@ -69,10 +98,69 @@ export function updateSaveIndicator(state) {
  *   summed across all loaded images.
  */
 export function updateClassStatBadges(counts) {
+    cancelCountup();
     counts.forEach((count, index) => {
         const badge = document.getElementById(`stat-class-${index}`);
-        if (badge) badge.textContent = count;
+        if (badge) {
+            badge.classList.remove('loading');
+            badge.textContent = count;
+        }
     });
+}
+
+/**
+ * Wipes the count badges to a pulsing "…" placeholder, signalling that fresh counts
+ * are being computed. Called the moment a retrain starts so the stale numbers don't
+ * just sit there until the new ones pop in.
+ */
+export function setClassBadgesLoading() {
+    cancelCountup();
+    document.querySelectorAll('.class-count-number').forEach(badge => {
+        badge.classList.add('loading');
+        // badge.textContent = '....';
+    });
+}
+
+/**
+ * Animates each class badge counting up from 0 to its final value, as if the objects
+ * are being tallied live. Clears the loading placeholder. A single rAF loop drives all
+ * badges; a subsequent retrain cancels it via cancelCountup (see setClassBadgesLoading).
+ * @param {Array<number>} counts - Final per-class object counts.
+ */
+export function animateClassStatBadges(counts) {
+    cancelCountup();
+    const badges = counts.map((_, i) => document.getElementById(`stat-class-${i}`));
+    badges.forEach(b => b && b.classList.remove('loading'));
+
+    // Bigger counts should take longer to count to.
+    const durations = counts.map((c) => Math.log10(c === 0 ? 1 : c) * 200)
+    const start = performance.now();
+    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+    const step = (now) => {
+        let keepAnimating = false;
+
+        counts.forEach((count, i) => {
+            const t = Math.min(1, (now - start) / durations[i]);
+            const ease = easeOutCubic(t)
+            const badge = badges[i];
+            if (badge) badge.textContent = Math.round(count * ease);
+
+            // If any badge is still going, we need to request another frame
+            if (t < 1) {
+                keepAnimating = true;
+            }
+        });
+
+        // Only call requestAnimationFrame ONCE per tick
+        if (keepAnimating) {
+            _countupRaf = requestAnimationFrame(step);
+        } else {
+            _countupRaf = null;
+        }
+    };
+
+    _countupRaf = requestAnimationFrame(step);
 }
 
 /**

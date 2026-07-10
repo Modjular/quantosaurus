@@ -52,3 +52,15 @@ export const STATS_LAYOUT = {
     denseCount: 10,
     minIndex: 7, // index of min_intensity within the sparse struct (seeded to 0xFFFFFFFF)
 };
+
+// Centroid marker overlay: a circle drawn over each detected object's centroid,
+// with radius derived from the object's area on a log scale so large blobs don't
+// yield huge circles. radius(px) = minRadius + logScale * Math.log(area). Markers
+// are drawn in image-pixel units on the per-image overlay canvas, so lineWidth
+// scales with camera zoom the same way painted labels do.
+export const CENTROID_OVERLAY = {
+    minRadius: 1.5,   // floor so tiny objects still show a visible circle
+    logScale: 1.6,    // px added per natural-log unit of area
+    lineWidth: 1,     // ring stroke width (image px)
+    haloAlpha: 0.5,   // opacity of the dark under-stroke that keeps the ring legible
+};

@@ -81,7 +81,6 @@ body.theme-light {
 }
 /* Fix subtle button contrast in light mode */
 body.theme-light .btn-subtle { color: var(--text-main); }
-body.theme-light .class-stat-badge { background: rgba(51, 48, 42, 0.08); }
 
 
 /* ── Layout & Structure ───────────────────────────────────────────── */
@@ -223,9 +222,6 @@ button {
     cursor: pointer;
     font-weight: 600;
     font-size: 12px;
-}
-button:hover:not(:disabled) {
-    background: var(--accent-primary-hover);
 }
 button:disabled {
     background: var(--accent-subtle);
@@ -444,16 +440,46 @@ button:disabled {
     outline: 1px solid var(--accent-primary);
     outline-offset: 1px;
 }
-.class-stat-badge {
+.class-count {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin-left: auto;
+}
+/* A small class-colored swatch that doubles as a toggle button for that class's
+   on-canvas centroid markers — --dot-color is set inline per class (index.html). */
+.class-count-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--dot-color, currentColor);
+    background: var(--dot-color, currentColor);
+    padding: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: transform 0.1s ease;
+}
+.class-count-dot:hover {
+    transform: scale(1.15);
+}
+.class-count-dot.hidden {
+    background: transparent; /* hollow ring = markers currently hidden */
+}
+/* Plain text, not boxed, so 4+ digit counts never overflow a fixed container. */
+.class-count-number {
     font-size: 11px;
-    color: #888;
-    background: rgba(0,0,0,0.05);
-    padding: 2px 6px;
-    border-radius: 10px;
     font-family: monospace;
+    color: var(--text-dim);
     min-width: 14px;
-    text-align: center;
+    text-align: right;
+}
+/* Pulsing "…" placeholder while fresh counts are being computed (setClassBadgesLoading). */
+.class-count-number.loading {
+    animation: badgePulse 1s ease-in-out infinite;
+}
+@keyframes badgePulse {
+    0%, 100% { opacity: 0.3; }
+    50%      { opacity: 0.8; }
 }
 
 /* ── Composite Structural Panels ──────────────────────────────────── */
@@ -631,6 +657,17 @@ canvas {
     z-index: 2;
     cursor: crosshair;
 }
+.overlay-canvas {
+    /* Centroid markers, above the brush layer; never intercepts painting so
+       pointer events fall through to the label canvas below. */
+    z-index: 3;
+    pointer-events: none;
+    /* Override the pixel-art `canvas` rule above: the gpu/label canvases want
+       nearest-neighbor so raw pixels/brush strokes stay crisp, but that upscales
+       this layer's anti-aliased marker rings into blocky, grainy edges on zoom.
+       Let the browser bilinear-smooth them instead. */
+    image-rendering: auto;
+}
 
 /* Dynamic Interactivity states */
 body.mode-grab .label-canvas,
@@ -641,6 +678,15 @@ body.space-down .label-canvas {
 body.mode-grab.panning .label-canvas,
 body.space-down.panning .label-canvas {
     cursor: grabbing !important;
+}
+
+/* While a retrain is running, signal "working" with a native progress cursor
+   (overriding the canvas crosshair too). See setTrainingIndicator. */
+body.training {
+    cursor: progress;
+}
+body.training .label-canvas {
+    cursor: progress !important;
 }
 
 /* ── Utilities & Cleanups ─────────────────────────────────────────── */
