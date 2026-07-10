@@ -117,7 +117,7 @@ export function setClassBadgesLoading() {
     cancelCountup();
     document.querySelectorAll('.class-count-number').forEach(badge => {
         badge.classList.add('loading');
-        badge.textContent = '…';
+        // badge.textContent = '....';
     });
 }
 
@@ -126,28 +126,40 @@ export function setClassBadgesLoading() {
  * are being tallied live. Clears the loading placeholder. A single rAF loop drives all
  * badges; a subsequent retrain cancels it via cancelCountup (see setClassBadgesLoading).
  * @param {Array<number>} counts - Final per-class object counts.
- * @param {{duration?: number}} [opts] - Animation duration in ms (default 500).
  */
-export function animateClassStatBadges(counts, { duration = 500 } = {}) {
+export function animateClassStatBadges(counts) {
     cancelCountup();
     const badges = counts.map((_, i) => document.getElementById(`stat-class-${i}`));
     badges.forEach(b => b && b.classList.remove('loading'));
 
-    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+    // Bigger counts should take longer to count to.
+    const durations = counts.map((c) => Math.log10(c === 0 ? 1 : c) * 200)
     const start = performance.now();
+    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
     const step = (now) => {
-        const t = Math.min(1, (now - start) / duration);
-        const eased = easeOutCubic(t);
+        let keepAnimating = false;
+
         counts.forEach((count, i) => {
+            const t = Math.min(1, (now - start) / durations[i]);
+            const ease = easeOutCubic(t)
             const badge = badges[i];
-            if (badge) badge.textContent = Math.round(count * eased);
+            if (badge) badge.textContent = Math.round(count * ease);
+
+            // If any badge is still going, we need to request another frame
+            if (t < 1) {
+                keepAnimating = true;
+            }
         });
-        if (t < 1) {
+
+        // Only call requestAnimationFrame ONCE per tick
+        if (keepAnimating) {
             _countupRaf = requestAnimationFrame(step);
         } else {
             _countupRaf = null;
         }
     };
+
     _countupRaf = requestAnimationFrame(step);
 }
 

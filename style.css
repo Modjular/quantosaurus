@@ -223,9 +223,6 @@ button {
     font-weight: 600;
     font-size: 12px;
 }
-button:hover:not(:disabled) {
-    background: var(--accent-primary-hover);
-}
 button:disabled {
     background: var(--accent-subtle);
     color: var(--text-disabled);
