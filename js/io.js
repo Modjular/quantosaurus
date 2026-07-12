@@ -53,6 +53,9 @@ export function deinterleaveChannels(data, w, h, C) {
  * values up to 65535), not a 0–1 min–max stretch — features, stats, and the contrast
  * control all operate in real units. Display windowing happens on the GPU from these
  * raw values.
+ *
+ * Higher-rank (3D+) inputs return an empty `channels` array (with `shape` set); the caller
+ * rejects them by shape rather than materializing planes.
  * @param {File} file - The image file to load.
  * @returns {Promise<{channels: Array<{intensityArray: Float32Array, range: {dataMin: number, dataMax: number, dtypeMax: number, scale: number}}>, w: number, h: number, shape: number[]}>}
  */
@@ -69,21 +72,25 @@ export async function loadFileIntoArray(file) {
     h = image.size[1]
     shape = image.size
 
-    if (shape.length <= 2) {
-      // 2D: read the component count explicitly (itk hides multichannel here — image.size
-      // stays [w, h] and the channels live in imageType.components). De-interleave into one
-      // plane per channel. The length check is the safety guard: rather than silently reading
-      // the first w*h interleaved samples as one channel, fail loudly on any mismatch.
-      const C = image.imageType?.components ?? 1;
-      const expected = w * h * C;
-      if (image.data.length !== expected) {
-        throw new Error(`Unexpected TIFF pixel buffer for ${file.name}: got ${image.data.length} values, expected ${w}×${h}×${C} = ${expected} (components=${C}).`);
-      }
-      planes = deinterleaveChannels(image.data, w, h, C);
-    } else {
-      // Higher-rank data is rejected downstream by shape (see images.js); don't de-interleave.
-      planes = [image.data instanceof Float32Array ? image.data : Float32Array.from(image.data)];
+    // Only 2D is supported (images.js rejects higher rank by shape). Bail out early for 3D+
+    // so we skip the wasted work of copying and min/max-scanning the whole volume: itk has
+    // already decoded image.data, but a z=100 stack would otherwise allocate a second
+    // full-size Float32Array and scan every voxel just to be thrown away. Returns an empty
+    // channels array; the caller rejects on shape.
+    if (shape.length > 2) {
+      return { channels: [], w, h, shape };
     }
+
+    // 2D: read the component count explicitly (itk hides multichannel here — image.size
+    // stays [w, h] and the channels live in imageType.components). De-interleave into one
+    // plane per channel. The length check is the safety guard: rather than silently reading
+    // the first w*h interleaved samples as one channel, fail loudly on any mismatch.
+    const C = image.imageType?.components ?? 1;
+    const expected = w * h * C;
+    if (image.data.length !== expected) {
+      throw new Error(`Unexpected TIFF pixel buffer for ${file.name}: got ${image.data.length} values, expected ${w}×${h}×${C} = ${expected} (components=${C}).`);
+    }
+    planes = deinterleaveChannels(image.data, w, h, C);
 
     const componentType = image.imageType?.componentType;
     const isFloat = componentType === 'float32' || componentType === 'float64';

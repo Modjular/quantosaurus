@@ -109,7 +109,11 @@ export async function addImage(state, file) {
     }
 
     if (loaded.shape.length > 2) {
+      const dims = loaded.shape.join('×');
       console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
+      // Surface the rejection to the user — otherwise a dropped z-stack just silently
+      // vanishes with only a console message they won't see.
+      alert(`Only 2D images are supported. "${file.name}" is ${loaded.shape.length}D (${dims}) — 3D volumes / z-stacks aren't supported yet.`);
       placeholderRow.remove();
       syncUI(state);
       return;
