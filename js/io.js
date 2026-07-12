@@ -15,16 +15,49 @@ const DTYPE_MAX = {
 };
 
 /**
- * Loads an image file into a raw single-channel intensity array plus display
- * range metadata. Unlike the old path, the returned intensities are the *raw*
- * pixel values (e.g. a uint16 TIFF yields values up to 65535), not a 0–1
- * min–max stretch — features, stats, and the contrast control all operate in
- * real units. Display windowing happens on the GPU from these raw values.
+ * Splits an interleaved multi-component pixel buffer into C separate single-channel
+ * planes. itk-wasm returns multichannel data pixel-interleaved (component c of pixel
+ * i lives at `data[i * C + c]`); each returned plane is a contiguous w*h Float32Array.
+ * The C === 1 case is a zero-copy identity (returns the buffer as-is when it is already
+ * a Float32Array), preserving the single-channel fast path. Pure and dependency-free.
+ * @param {Float32Array|Array<number>|TypedArray} data - Interleaved buffer, length w*h*C.
+ * @param {number} w - Image width.
+ * @param {number} h - Image height.
+ * @param {number} C - Component/channel count.
+ * @returns {Float32Array[]} C planes, each of length w*h.
+ */
+export function deinterleaveChannels(data, w, h, C) {
+    if (C === 1) {
+        // Widen to f32 for the GPU (integers are exact up to 2^24, so uint16 is lossless).
+        return [data instanceof Float32Array ? data : Float32Array.from(data)];
+    }
+    const n = w * h;
+    const planes = [];
+    for (let c = 0; c < C; c++) {
+        const plane = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+            plane[i] = data[i * C + c];
+        }
+        planes.push(plane);
+    }
+    return planes;
+}
+
+/**
+ * Loads an image file into one or more raw single-channel intensity planes plus
+ * per-plane display range metadata. A 2D multichannel TIFF yields one plane per
+ * channel (de-interleaved); single-channel TIFFs and PNG/JPG yield a single plane.
+ * Callers treat each plane as an independent single-channel image.
+ *
+ * The returned intensities are the *raw* pixel values (e.g. a uint16 TIFF yields
+ * values up to 65535), not a 0–1 min–max stretch — features, stats, and the contrast
+ * control all operate in real units. Display windowing happens on the GPU from these
+ * raw values.
  * @param {File} file - The image file to load.
- * @returns {Promise<{intensityArray: Float32Array, w: number, h: number, shape: number[], range: {dataMin: number, dataMax: number, dtypeMax: number, scale: number}}>}
+ * @returns {Promise<{channels: Array<{intensityArray: Float32Array, range: {dataMin: number, dataMax: number, dtypeMax: number, scale: number}}>, w: number, h: number, shape: number[]}>}
  */
 export async function loadFileIntoArray(file) {
-  let intensityArray, w, h, shape, dtypeMax, scale;
+  let planes, w, h, shape, dtypeMax, scale;
 
   if (file.name.endsWith('.tif') || file.name.endsWith('.tiff')) {
     // webWorker: false — the bundled worker runs from a data: URL (opaque origin), which
@@ -35,11 +68,22 @@ export async function loadFileIntoArray(file) {
     w = image.size[0]
     h = image.size[1]
     shape = image.size
-    // Keep the raw pixel magnitudes; widen to f32 for the GPU (which represents
-    // integers exactly up to 2^24, so uint16 is lossless).
-    intensityArray = image.data instanceof Float32Array
-        ? image.data
-        : Float32Array.from(image.data);
+
+    if (shape.length <= 2) {
+      // 2D: read the component count explicitly (itk hides multichannel here — image.size
+      // stays [w, h] and the channels live in imageType.components). De-interleave into one
+      // plane per channel. The length check is the safety guard: rather than silently reading
+      // the first w*h interleaved samples as one channel, fail loudly on any mismatch.
+      const C = image.imageType?.components ?? 1;
+      const expected = w * h * C;
+      if (image.data.length !== expected) {
+        throw new Error(`Unexpected TIFF pixel buffer for ${file.name}: got ${image.data.length} values, expected ${w}×${h}×${C} = ${expected} (components=${C}).`);
+      }
+      planes = deinterleaveChannels(image.data, w, h, C);
+    } else {
+      // Higher-rank data is rejected downstream by shape (see images.js); don't de-interleave.
+      planes = [image.data instanceof Float32Array ? image.data : Float32Array.from(image.data)];
+    }
 
     const componentType = image.imageType?.componentType;
     const isFloat = componentType === 'float32' || componentType === 'float64';
@@ -61,20 +105,24 @@ export async function loadFileIntoArray(file) {
 
     // Raw luma in 0–255 units (these formats decode to 8-bit), keeping display
     // and stats in the source's real range rather than a 0–1 stretch.
-    intensityArray = new Float32Array(w * h);
+    const intensityArray = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) {
         const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
         intensityArray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
     }
+    planes = [intensityArray];
     dtypeMax = 255;
     scale = 1;
   }
 
-  const { dataMin, dataMax } = computeMinMax(intensityArray);
-  // Float images have no fixed dtype max, so the slider spans the data's range.
-  const range = { dataMin, dataMax, dtypeMax: dtypeMax ?? dataMax, scale };
+  const channels = planes.map((intensityArray) => {
+    const { dataMin, dataMax } = computeMinMax(intensityArray);
+    // Float images have no fixed dtype max, so the slider spans the data's range.
+    const range = { dataMin, dataMax, dtypeMax: dtypeMax ?? dataMax, scale };
+    return { intensityArray, range };
+  });
 
-  return { intensityArray, w, h, shape, range }
+  return { channels, w, h, shape }
 }
 
 /**

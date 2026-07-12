@@ -54,7 +54,10 @@ export async function addFiles(state, files) {
     for (const file of files) {
         const validFileTypes = ['.tif', '.tiff', '.png', '.jpg', '.jpeg'];
         const isValidFileType = validFileTypes.some((filetype) => file.name.toLowerCase().endsWith(filetype));
-        const isDuplicate = state.images.some(img => img.name === file.name && img.fileSize === file.size);
+        // Dedup on the source file (name + size), not the display name: a multichannel
+        // file expands into several images whose display names are channel-suffixed, but
+        // they all share sourceName === file.name.
+        const isDuplicate = state.images.some(img => img.sourceName === file.name && img.fileSize === file.size);
 
         if (!isDuplicate && isValidFileType) {
             await addImage(state, file);
@@ -63,22 +66,36 @@ export async function addFiles(state, files) {
 }
 
 /**
- * Loads a single image file, builds its sidebar row and canvas tile, spins up a
- * backend, computes initial features, and registers the paint handlers. Bails
- * out (cleaning up the partial DOM) on load failure or non-2D images.
- * @param {Object} state - Shared app state; the new image is pushed to state.images.
+ * Builds a sidebar row wired to this app's reorder/delete/contrast handlers for a
+ * given image id.
+ * @param {Object} state - Shared app state.
+ * @param {string} id - The image id the row's controls act on.
+ * @param {string} name - Display name for the row.
+ * @returns {HTMLElement} The sidebar row element (not yet attached).
+ */
+function createRowFor(state, id, name) {
+    return createImageRow(id, name, {
+        onReorder:  (dir)    => reorderImage(state, id, dir),
+        onDelete:   ()       => deleteImage(state, id),
+        onContrast: (anchor) => openContrastPopover(state, id, anchor),
+    });
+}
+
+/**
+ * Loads a single image file and materializes one displayed image per channel: a 2D
+ * multichannel TIFF becomes C independent single-channel images (each with its own
+ * sidebar row, canvas tile, backend, contrast window, and labels), while single-channel
+ * TIFFs and PNG/JPG yield one. Bails out (cleaning up the partial DOM) on load failure
+ * or non-2D images.
+ * @param {Object} state - Shared app state; each new image is pushed to state.images.
  * @param {File} file - The image file to load.
  */
 export async function addImage(state, file) {
-    const imgId = crypto.randomUUID();
-    const row   = createImageRow(imgId, file.name, {
-        onReorder: (dir)      => reorderImage(state, imgId, dir),
-        onDelete:  ()         => deleteImage(state, imgId),
-        onContrast: (anchor)  => openContrastPopover(state, imgId, anchor),
-    });
-    row.classList.add('loading');
+    const placeholderId = crypto.randomUUID();
+    const placeholderRow = createRowFor(state, placeholderId, file.name);
+    placeholderRow.classList.add('loading');
     document.getElementById('img-empty').style.display = 'none';
-    document.getElementById('image-list').appendChild(row);
+    document.getElementById('image-list').appendChild(placeholderRow);
 
     let loaded;
     try {
@@ -86,20 +103,62 @@ export async function addImage(state, file) {
     } catch (err) {
         console.error(err);
         alert(`Failed to load ${file.name}: ${err.message}`);
-        row.remove();
+        placeholderRow.remove();
         syncUI(state);
         return;
     }
 
     if (loaded.shape.length > 2) {
       console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
-      row.remove();
+      placeholderRow.remove();
       syncUI(state);
       return;
     }
 
-    const { intensityArray, w, h, range } = loaded;
+    const { channels, w, h } = loaded;
+    const multichannel = channels.length > 1;
 
+    // Single channel reuses the loading placeholder row; multichannel gives each channel
+    // its own row (with a channel-suffixed name), so drop the placeholder first.
+    if (multichannel) placeholderRow.remove();
+
+    for (let c = 0; c < channels.length; c++) {
+        const { intensityArray, range } = channels[c];
+        const name = multichannel ? `${file.name} [ch${c}]` : file.name;
+        const id   = multichannel ? crypto.randomUUID() : placeholderId;
+        let row = placeholderRow;
+        if (multichannel) {
+            row = createRowFor(state, id, name);
+            row.classList.add('loading');
+            document.getElementById('image-list').appendChild(row);
+        }
+        await buildImageEntry(state, {
+            id, name, sourceName: file.name, fileSize: file.size,
+            intensityArray, w, h, range, row,
+        });
+    }
+
+    syncUI(state);
+}
+
+/**
+ * Builds the canvas tile, GPU backend, per-image state entry, and paint handlers for a
+ * single already-loaded single-channel intensity plane, and pushes it to state.images.
+ * On backend-init failure it cleans up its own DOM (tile + sidebar row) and returns false.
+ * @param {Object} state - Shared app state.
+ * @param {Object} args
+ * @param {string} args.id - Unique image id.
+ * @param {string} args.name - Display name (channel-suffixed for multichannel sources).
+ * @param {string} args.sourceName - Original source file name (shared across a file's channels; used for dedup).
+ * @param {number} args.fileSize - Source file size in bytes (used for dedup).
+ * @param {Float32Array} args.intensityArray - Raw single-channel intensities, length w*h.
+ * @param {number} args.w - Image width.
+ * @param {number} args.h - Image height.
+ * @param {Object} args.range - Display range metadata {dataMin, dataMax, dtypeMax, scale}.
+ * @param {HTMLElement} args.row - The sidebar row already attached for this image.
+ * @returns {Promise<boolean>} True on success, false if the backend failed to initialize.
+ */
+async function buildImageEntry(state, { id, name, sourceName, fileSize, intensityArray, w, h, range, row }) {
     const container = document.createElement('div');
     container.className = 'image-container';
     container.style.width  = w + 'px';
@@ -122,7 +181,7 @@ export async function addImage(state, file) {
 
     const tileLabel = document.createElement('div');
     tileLabel.className   = 'image-tile-label';
-    tileLabel.textContent = `${file.name} ${w}x${h}`;
+    tileLabel.textContent = `${name} ${w}x${h}`;
 
     container.appendChild(gpuCanvas);
     container.appendChild(labelCanvas);
@@ -131,23 +190,25 @@ export async function addImage(state, file) {
     document.getElementById('canvas-board').appendChild(container);
 
     let backend = null;
-  
+
     try {
         backend = await initializeBackend(gpuCanvas, state.labelColors)
     } catch (err) {
         console.error(err);
         container.remove();
         row.remove();
-        syncUI(state);
-        return;
+        return false;
     }
     await backend.allocateImage(w, h, intensityArray, range);
     await backend.updateFeatures(intensityArray, state.sigma);
 
     const imgState = {
-        id: imgId,
-        name: file.name,
-        fileSize: file.size,
+        id,
+        name,
+        // Original source file name, shared by all channels of one file. Dedup keys on this
+        // (see addFiles) so re-dropping a multichannel file doesn't re-add its channels.
+        sourceName,
+        fileSize,
         backend,
         width: w, height: h,
         intensityArray,
@@ -174,7 +235,7 @@ export async function addImage(state, file) {
         labelCanvas.setPointerCapture(e.pointerId);
         imgState._cachedRect = labelCanvas.getBoundingClientRect();
         state.isDrawing    = true;
-        state.activeImageId = imgId;
+        state.activeImageId = id;
         const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
         paint(state, imgState, e, radius);
     });
@@ -182,14 +243,14 @@ export async function addImage(state, file) {
         if (!e.isPrimary) return;
         if (state.isSpaceDown) return;
         if (state.activePointerCount > 1) return; // a second finger joined — pause the stroke
-        if (state.isDrawing && state.activeImageId === imgId && state.toolMode !== 'grab') {
+        if (state.isDrawing && state.activeImageId === id && state.toolMode !== 'grab') {
             const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
             paint(state, imgState, e, radius);
         }
     });
     function endStroke(e) {
         if (!e.isPrimary) return;
-        if (state.activeImageId === imgId) {
+        if (state.activeImageId === id) {
             state.isDrawing    = false;
             state.activeImageId = null;
             scheduleTraining(state);
@@ -202,8 +263,7 @@ export async function addImage(state, file) {
     ro.observe(labelCanvas);
 
     row.classList.remove('loading');
-
-    syncUI(state);
+    return true;
 }
 
 /**
