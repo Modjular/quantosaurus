@@ -2,9 +2,24 @@ import { RF_CONFIG, CENTROID_OVERLAY } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
-import { createImageRow, syncUI, updateSaveIndicator } from './ui.js';
-import { openContrastPopover } from './contrast.js';
 import { scheduleTraining } from './training.js';
+
+// Dispatches a CustomEvent on the owning Quantosaurus instance (state.events).
+// Optional-chained so state objects without a dispatch target (unit tests,
+// plain-object fixtures) keep working — events are strictly additive here.
+function emit(state, name, detail) {
+    state.events?.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+// Flips the dirty flag, emitting dirtychange only on the false->true
+// transition — paint() is the hottest path in the app (fires on every
+// mousemove while dragging), and dirty stays true for the rest of a typical
+// painting session.
+function markDirty(state) {
+    if (state.dirty) return;
+    state.dirty = true;
+    emit(state, 'dirtychange', { dirty: true });
+}
 
 
 /**
@@ -63,38 +78,33 @@ export async function addFiles(state, files) {
 }
 
 /**
- * Loads a single image file, builds its sidebar row and canvas tile, spins up a
- * backend, computes initial features, and registers the paint handlers. Bails
- * out (cleaning up the partial DOM) on load failure or non-2D images.
+ * Loads a single image file, builds its canvas tile, spins up a backend,
+ * computes initial features, and registers the paint handlers. Emits
+ * imageloadstart at the top, then either imageadded on success or
+ * imageloaderror (cleaning up any partial DOM) on load failure, non-2D
+ * images, or backend-init failure — chrome tracks load progress off these.
  * @param {Object} state - Shared app state; the new image is pushed to state.images.
  * @param {File} file - The image file to load.
  */
 export async function addImage(state, file) {
     const imgId = crypto.randomUUID();
-    const row   = createImageRow(imgId, file.name, {
-        onReorder: (dir)      => reorderImage(state, imgId, dir),
-        onDelete:  ()         => deleteImage(state, imgId),
-        onContrast: (anchor)  => openContrastPopover(state, imgId, anchor),
-    });
-    row.classList.add('loading');
-    document.getElementById('img-empty').style.display = 'none';
-    document.getElementById('image-list').appendChild(row);
+    emit(state, 'imageloadstart', { id: imgId, name: file.name });
 
     let loaded;
     try {
         loaded = await loadFileIntoArray(file);
     } catch (err) {
         console.error(err);
-        alert(`Failed to load ${file.name}: ${err.message}`);
-        row.remove();
-        syncUI(state);
+        emit(state, 'imageloaderror', {
+            id: imgId, name: file.name, reason: 'load-failed',
+            message: `Failed to load ${file.name}: ${err.message}`,
+        });
         return;
     }
 
     if (loaded.shape.length > 2) {
       console.warn(`Only 2D images are currently supported. ${file.name} has shape (${loaded.shape})`);
-      row.remove();
-      syncUI(state);
+      emit(state, 'imageloaderror', { id: imgId, name: file.name, reason: 'unsupported-dimensions' });
       return;
     }
 
@@ -128,17 +138,16 @@ export async function addImage(state, file) {
     container.appendChild(labelCanvas);
     container.appendChild(overlayCanvas);
     container.appendChild(tileLabel);
-    document.getElementById('canvas-board').appendChild(container);
+    state.board.appendChild(container);
 
     let backend = null;
-  
+
     try {
         backend = await initializeBackend(gpuCanvas, state.labelColors)
     } catch (err) {
         console.error(err);
         container.remove();
-        row.remove();
-        syncUI(state);
+        emit(state, 'imageloaderror', { id: imgId, name: file.name, reason: 'no-backend' });
         return;
     }
     await backend.allocateImage(w, h, intensityArray, range);
@@ -160,10 +169,9 @@ export async function addImage(state, file) {
         labels: [],
         gpuCanvas, labelCanvas, overlayCanvas, container,
         _cachedRect: null,
-        _sidebarRow: row,
     };
     state.images.push(imgState);
-    state.dirty = true;
+    markDirty(state);
 
     // Pointer events unify mouse/touch/pen. Only the primary pointer paints
     // (the first touch contact, or the mouse) — a second simultaneous touch is
@@ -175,16 +183,14 @@ export async function addImage(state, file) {
         imgState._cachedRect = labelCanvas.getBoundingClientRect();
         state.isDrawing    = true;
         state.activeImageId = imgId;
-        const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
-        paint(state, imgState, e, radius);
+        paint(state, imgState, e, state.brushSize);
     });
     labelCanvas.addEventListener('pointermove', (e) => {
         if (!e.isPrimary) return;
         if (state.isSpaceDown) return;
         if (state.activePointerCount > 1) return; // a second finger joined — pause the stroke
         if (state.isDrawing && state.activeImageId === imgId && state.toolMode !== 'grab') {
-            const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
-            paint(state, imgState, e, radius);
+            paint(state, imgState, e, state.brushSize);
         }
     });
     function endStroke(e) {
@@ -192,6 +198,11 @@ export async function addImage(state, file) {
         if (state.activeImageId === imgId) {
             state.isDrawing    = false;
             state.activeImageId = null;
+            emit(state, 'labelschanged', {
+                id: imgId,
+                labelCount: imgState.labels.length,
+                totalLabels: state.images.reduce((s, i) => s + i.labels.length, 0),
+            });
             scheduleTraining(state);
         }
     }
@@ -201,14 +212,16 @@ export async function addImage(state, file) {
     const ro = new ResizeObserver(() => { imgState._cachedRect = null; });
     ro.observe(labelCanvas);
 
-    row.classList.remove('loading');
-
-    syncUI(state);
+    emit(state, 'imageadded', {
+        id: imgId, name: file.name, width: w, height: h,
+        index: state.images.length - 1,
+    });
 }
 
 /**
- * Moves an image one slot up or down, keeping state.images, the canvas tiles,
- * and the sidebar rows in the same visual order (which is also export order).
+ * Moves an image one slot up or down, keeping state.images and the canvas
+ * tiles in the same visual order (which is also export order). Emits
+ * imagereordered so chrome tracking image order can follow.
  * @param {Object} state - Shared app state.
  * @param {string} imgId - Id of the image to move.
  * @param {-1|1} direction - -1 to move up, +1 to move down.
@@ -221,22 +234,15 @@ export function reorderImage(state, imgId, direction) {
 
     [state.images[idx], state.images[newIdx]] =
     [state.images[newIdx], state.images[idx]];
-    state.dirty = true; // changes export lane order
-    updateSaveIndicator(state);
+    markDirty(state); // changes export lane order
 
-    const board = document.getElementById('canvas-board');
-    const tiles = [...board.children];
+    const tiles = [...state.board.children];
     const a = tiles[idx];
     const b = tiles[newIdx];
-    if (direction === -1) board.insertBefore(a, b);
-    else                  board.insertBefore(b, a);
+    if (direction === -1) state.board.insertBefore(a, b);
+    else                  state.board.insertBefore(b, a);
 
-    const list = document.getElementById('image-list');
-    const rows = [...list.children];
-    const ra = rows[idx];
-    const rb = rows[newIdx];
-    if (direction === -1) list.insertBefore(ra, rb);
-    else                  list.insertBefore(rb, ra);
+    emit(state, 'imagereordered', { id: imgId, fromIndex: idx, toIndex: newIdx });
 }
 
 /**
@@ -262,13 +268,19 @@ export function deleteImage(state, imgId) {
 
     imgState.backend.destroy();
     imgState.container.remove();
-    imgState._sidebarRow.remove();
     state.images.splice(idx, 1);
-    state.dirty = true;
+    markDirty(state);
 
-    if (labelCount > 0) scheduleTraining(state);
+    emit(state, 'imageremoved', { id: imgId, index: idx });
 
-    syncUI(state);
+    if (labelCount > 0) {
+        emit(state, 'labelschanged', {
+            id: imgId,
+            labelCount: 0,
+            totalLabels: state.images.reduce((s, i) => s + i.labels.length, 0),
+        });
+        scheduleTraining(state);
+    }
 }
 
 /**
@@ -405,10 +417,7 @@ export function paint(state, imgState, e, radius) {
 
     const pixels = getPixelsInRadius(x, y, radius, imgState.width, imgState.height);
     if (pixels.length === 0) return;
-    // Only touch the DOM on the false->true transition — paint() is the
-    // hottest path in the app (fires on every mousemove while dragging), and
-    // dirty stays true for the rest of a typical painting session.
-    if (!state.dirty) { state.dirty = true; updateSaveIndicator(state); }
+    markDirty(state);
 
     const pixelSet = new Set(pixels.map(p => `${p.x},${p.y}`));
     imgState.labels = imgState.labels.filter(lbl => !pixelSet.has(`${lbl.x},${lbl.y}`));

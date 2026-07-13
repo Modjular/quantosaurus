@@ -1,4 +1,80 @@
 /**
+ * Wires the sidebar/top-bar chrome onto a Quantosaurus instance's events: the
+ * per-image sidebar rows (with loading state), the status line, the training
+ * indicator, the save indicator, and the per-class count badges. The chrome is
+ * a pure subscriber — every mutation goes back through methods on `q`, so this
+ * whole layer can be swapped out (or omitted, in an embed) without touching
+ * the app core.
+ * @param {import('./quantosaurus.js').Quantosaurus} q - The app instance.
+ */
+export function bindChrome(q) {
+    const state = q.state;
+    const rows = new Map(); // imgId -> sidebar row element
+
+    q.addEventListener('imageloadstart', (e) => {
+        const { id, name } = e.detail;
+        const row = createImageRow(id, name, {
+            onReorder: (dir)     => q.reorderImage(id, dir),
+            onDelete:  ()        => q.deleteImage(id),
+            onContrast: (anchor) => q.openContrast(id, anchor),
+        });
+        row.classList.add('loading');
+        document.getElementById('img-empty').style.display = 'none';
+        document.getElementById('image-list').appendChild(row);
+        rows.set(id, row);
+    });
+
+    q.addEventListener('imageadded', (e) => {
+        rows.get(e.detail.id)?.classList.remove('loading');
+        syncUI(state);
+    });
+
+    q.addEventListener('imageloaderror', (e) => {
+        const { id, message } = e.detail;
+        rows.get(id)?.remove();
+        rows.delete(id);
+        syncUI(state);
+        if (message) alert(message);
+    });
+
+    q.addEventListener('imageremoved', (e) => {
+        rows.get(e.detail.id)?.remove();
+        rows.delete(e.detail.id);
+        syncUI(state);
+    });
+
+    q.addEventListener('imagereordered', (e) => {
+        const { fromIndex, toIndex } = e.detail;
+        const list = document.getElementById('image-list');
+        const els  = [...list.children];
+        // Mirror the board-tile swap in images.js:reorderImage — the moved row
+        // goes before (moving up) or after (moving down) its neighbor.
+        if (toIndex < fromIndex) list.insertBefore(els[fromIndex], els[toIndex]);
+        else                     list.insertBefore(els[toIndex], els[fromIndex]);
+        updateSaveIndicator(state);
+    });
+
+    q.addEventListener('dirtychange', () => updateSaveIndicator(state));
+
+    q.addEventListener('trainingstart', () => {
+        // Give immediate feedback for the otherwise-silent await: a progress
+        // cursor + "Training…" status while the overlay recomputes, and the
+        // count badges wiped to a pulsing placeholder so the stale numbers
+        // don't just sit there.
+        setTrainingIndicator(state, true);
+        setClassBadgesLoading();
+    });
+
+    q.addEventListener('trainingcomplete', () => setTrainingIndicator(state, false));
+
+    q.addEventListener('statscomputed', (e) => {
+        const { counts, animate } = e.detail;
+        if (animate) animateClassStatBadges(counts);
+        else         updateClassStatBadges(counts);
+    });
+}
+
+/**
  * Refreshes all image-count-driven chrome (status line, export button, empty
  * state) in one call. Invoke after any change to state.images.
  * @param {Object} state - Shared app state.

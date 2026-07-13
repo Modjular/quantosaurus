@@ -231,79 +231,37 @@
 
 </div>
 <script type="module">
-    import { DEFAULT_LABEL_COLORS, RF_CONFIG } from './js/config.js'
-    import { addFiles, redrawLabels, renderCentroids } from './js/images.js';
-    import { zipImages, exportIlp } from './js/export.js';
-    import { setupCamera } from './js/camera.js';
-    import { FlatRandomForest } from './js/rf.js';
-    import { scheduleTraining } from './js/training.js'
-    import { loadSettings, saveSettings } from './js/settings.js';
-    import { updateSaveIndicator } from './js/ui.js';
+    import { Quantosaurus } from './js/quantosaurus.js';
+    import { bindChrome } from './js/ui.js';
 
-    const state = {
-        // Images — ordered array; visual order == export order
-        images: [],
+    // The app core — owns the shared state (images, forest, tools, camera) and
+    // emits CustomEvents for every state change. All chrome below is a consumer:
+    // it calls methods on `q` and subscribes to its events (see bindChrome and
+    // setupUI), never mutating q.state directly.
+    let q;
 
-        // ML
-        rf: new FlatRandomForest(RF_CONFIG),
-
-        // Presentation — per-class overlay colors, indexed by class. Owned by the
-        // UI (mutable), seeded from config defaults. The class *count* comes from
-        // rf.numClasses; colors are a separate concern that can change at runtime.
-        labelColors: [...DEFAULT_LABEL_COLORS],
-
-        // Per-class display names, indexed by class. Like labelColors, this is a
-        // UI-owned presentation concern (renamable at runtime, persisted to
-        // localStorage); the class *count* still comes from rf.numClasses.
-        classNames: Array.from({ length: RF_CONFIG.numClasses }, (_, i) => `Class ${i + 1}`),
-
-        // Whether each class's centroid markers are drawn on canvas (toggled via the
-        // class-item's swatch dot). Session-only — like camera/labels, not persisted.
-        classMarkersVisible: new Array(RF_CONFIG.numClasses).fill(true),
-
-        // Drawing / Tools
-        currentClass: 0,
-        isDrawing: false,
-        activeImageId: null,
-        toolMode: 'grab', // 'grab', 'paint', 'erase'
-
-        // Features
-        sigma: 1.0,
-
-        // Camera
-        camera: { x: 0, y: 0, scale: 1 },
-        isSpaceDown: false,
-        isPanning: false,
-        activePointerCount: 0,
-
-        // True while a debounced retrain+inference is running; drives the training
-        // progress cursor / status message (see setTrainingIndicator).
-        isTraining: false,
-        // Save state for the .ilp export (Ctrl+S). dirty tracks whether there
-        // are changes since the last successful save (set on image/label
-        // mutations in images.js, cleared by saveIlpProject); ilpFileHandle is
-        // the FileSystemFileHandle from a prior showSaveFilePicker() call, kept
-        // so repeat saves overwrite the same file instead of re-prompting
-        // (Chromium only — unset in browsers without the File System Access API).
-        dirty: false,
-        ilpFileHandle: null,
-    };
+    // FileSystemFileHandle from a prior showSaveFilePicker() call, kept so
+    // repeat saves overwrite the same file instead of re-prompting (Chromium
+    // only — stays null in browsers without the File System Access API). Owned
+    // by this shell, not the app core: how a project blob gets persisted is a
+    // host concern (an embed would save differently).
+    let ilpFileHandle = null;
 
     function init() {
         const viewport = document.getElementById('viewport');
         const board    = document.getElementById('canvas-board');
-        setupCamera(state, viewport, board);
-        loadSettings(state);   // restore persisted colors/names before the class UI renders
+        q = new Quantosaurus(board, { viewportEl: viewport });
+        bindChrome(q);
         setupUI();
         setupFeedback();
         setupTheme();
 
         // Guard against accidentally discarding work (loaded images + painted labels,
         // none of which is persisted). Only prompt when there are actual unsaved
-        // changes — state.dirty tracks that precisely (see images.js's mutation
-        // points and saveIlpProject below), so this stays quiet right after a save.
+        // changes — q.dirty tracks that precisely (set on image/label mutations,
+        // cleared by saveIlpProject below), so this stays quiet right after a save.
         window.addEventListener('beforeunload', (e) => {
-            if (state.dirty) {
+            if (q.dirty) {
                 e.preventDefault();
                 e.returnValue = '';
             }
@@ -339,12 +297,12 @@
     }
 
     /**
-     * Writes `blob` to state.ilpFileHandle, prompting via showSaveFilePicker if
+     * Writes `blob` to ilpFileHandle, prompting via showSaveFilePicker if
      * there's no handle yet (Chromium only). Falls back to a plain download link
      * in browsers without the File System Access API (Firefox, Safari), which
      * re-prompts on every save since there's no persistent handle to reuse.
      * Throws (with err.name === 'AbortError') if the user cancels the picker;
-     * clears state.ilpFileHandle and rethrows on any other write failure so the
+     * clears ilpFileHandle and rethrows on any other write failure so the
      * caller can retry once with a fresh picker (the old handle may be stale —
      * revoked permission, or the file was moved/deleted).
      */
@@ -353,18 +311,18 @@
             downloadBlob(blob, `quantosaurus_${dateStamp()}.ilp`);
             return;
         }
-        if (!state.ilpFileHandle) {
-            state.ilpFileHandle = await window.showSaveFilePicker({
+        if (!ilpFileHandle) {
+            ilpFileHandle = await window.showSaveFilePicker({
                 suggestedName: `quantosaurus_${dateStamp()}.ilp`,
                 ...ILP_PICKER_OPTS,
             });
         }
         try {
-            const writable = await state.ilpFileHandle.createWritable();
+            const writable = await ilpFileHandle.createWritable();
             await writable.write(blob);
             await writable.close();
         } catch (err) {
-            state.ilpFileHandle = null;
+            ilpFileHandle = null;
             throw err;
         }
     }
@@ -377,19 +335,18 @@
     const ILP_BUTTON_LABEL = 'Export ilastik Project (.ilp)';
 
     async function saveIlpProject() {
-        if (state.images.length === 0) return;
+        if (q.getImageInfo().length === 0) return;
         const btn = document.getElementById('btnExportIlp');
         btn.disabled = true;
         try {
-            const blob = exportIlp(state, { classNames: state.classNames });
+            const blob = q.exportIlp();
             try {
                 await writeIlpBlob(blob);
             } catch (err) {
                 if (err.name === 'AbortError') return; // user cancelled the picker
                 await writeIlpBlob(blob); // handle was likely stale — retry once with a fresh picker
             }
-            state.dirty = false;
-            updateSaveIndicator(state);
+            q.markSaved();
             // Transient confirmation on the button itself — mirrors btnExportAll's
             // existing pattern of repurposing its own label during an operation
             // ('Training…'/'Exporting…'), just for success instead of progress.
@@ -480,8 +437,8 @@
                         windowSize: `${window.innerWidth}x${window.innerHeight}`,
                         cores: navigator.hardwareConcurrency || 'unknown',
                         memoryGB: navigator.deviceMemory || 'unknown',
-                        appState_imagesLoaded: state.images ? state.images.length : 0,
-                        appState_activeTool: state.toolMode || 'unknown'
+                        appState_imagesLoaded: q.getImageInfo().length,
+                        appState_activeTool: q.tool || 'unknown'
                     };
                 }
 
@@ -527,7 +484,7 @@
 
         // File input
         document.getElementById('fileInput').onchange = (e) =>
-            addFiles(state, e.target.files).catch(console.error);
+            q.addFiles(e.target.files).catch(console.error);
 
         // Viewport drag-and-drop
         const viewport = document.getElementById('viewport');
@@ -536,55 +493,48 @@
         viewport.ondrop      = (e) => {
             e.preventDefault();
             viewport.classList.remove('drag-active');
-            addFiles(state, e.dataTransfer.files).catch(console.error);
+            q.addFiles(e.dataTransfer.files).catch(console.error);
         };
 
-        // Sigma
-        document.getElementById('sigmaRange').oninput = async (e) => {
-            state.sigma = parseFloat(e.target.value);
-            document.getElementById('sigmaVal').innerText = state.sigma.toFixed(1);
-            for (const img of state.images) {
-                await img.backend.updateFeatures(img.intensityArray, state.sigma);
-            }
-            scheduleTraining(state);
-        };
+        // Sigma — the control drives q.setSigma; the readout follows the event
+        // so it stays correct no matter what triggers the change.
+        document.getElementById('sigmaRange').oninput = (e) =>
+            q.setSigma(parseFloat(e.target.value)).catch(console.error);
+        q.addEventListener('sigmachanged', (e) => {
+            document.getElementById('sigmaVal').innerText = e.detail.sigma.toFixed(1);
+        });
 
-        // Brush Size
+        // Brush size — slider and [ / ] hotkeys both go through q.setBrushSize
+        // (which clamps); the slider + readout reflect the event.
         const brushRange = document.getElementById('brushSizeRange');
-        const brushVal    = document.getElementById('brushVal');
-        function setBrushSize(size) {
-            const clamped = Math.min(parseInt(brushRange.max, 10), Math.max(parseInt(brushRange.min, 10), size));
-            brushRange.value = clamped;
-            brushVal.innerText = clamped;
-        }
-        brushRange.oninput = () => setBrushSize(parseInt(brushRange.value, 10));
+        const brushVal   = document.getElementById('brushVal');
+        brushRange.oninput = () => q.setBrushSize(parseInt(brushRange.value, 10));
+        q.addEventListener('brushsizechanged', (e) => {
+            brushRange.value   = e.detail.size;
+            brushVal.innerText = e.detail.size;
+        });
 
-        // Tools Setup (Grab, Paint, Erase)
-        function selectTool(tool) {
-            const btn = document.querySelector(`.tool-btn[data-tool="${tool}"]`);
-            if (!btn) return;
-            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            state.toolMode = tool;
-
-            // Update body class for cursors
-            document.body.classList.remove('mode-grab', 'mode-paint', 'mode-erase');
-            document.body.classList.add(`mode-${state.toolMode}`);
-        }
+        // Tools (Grab, Paint, Erase) — buttons call q.setTool; the active
+        // highlight follows the toolchanged event (q handles the body cursor class).
         document.querySelectorAll('.tool-btn').forEach(btn => {
-            btn.onclick = () => selectTool(btn.dataset.tool);
+            btn.onclick = () => q.setTool(btn.dataset.tool);
+        });
+        q.addEventListener('toolchanged', (e) => {
+            document.querySelectorAll('.tool-btn').forEach(b =>
+                b.classList.toggle('active', b.dataset.tool === e.detail.tool));
         });
 
         // Setup class selector with stat badges. The forest owns the class count
-        // (rf.numClasses); colors come from the mutable state.labelColors palette,
-        // falling back to neutral gray if fewer colors than classes are defined.
+        // (q.numClasses); colors come from the mutable palette q owns, falling
+        // back to neutral gray if fewer colors than classes are defined.
         // The color swatch is a native <input type="color">, which always emits
-        // #rrggbb hex — state.labelColors entries are expected to stay hex from
-        // this point on so they round-trip through the picker cleanly.
+        // #rrggbb hex — palette entries are expected to stay hex from this point
+        // on so they round-trip through the picker cleanly.
+        const classColors = q.getClassColors();
+        const classNames  = q.getClassNames();
         document.querySelector('.class-selector').innerHTML =
-            Array.from({ length: state.rf.numClasses }, (_, index) => {
-                const color = state.labelColors[index] ?? '#888888';
-                const name = state.classNames[index] ?? `Class ${index + 1}`;
+            Array.from({ length: q.numClasses }, (_, index) => {
+                const color = classColors[index] ?? '#888888';
                 return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
                 <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
@@ -601,25 +551,22 @@
         // Fill class names via textContent (not innerHTML above) so persisted, user-
         // supplied names can't inject markup into the class selector.
         document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
-            span.textContent = state.classNames[parseInt(span.dataset.class, 10)];
+            span.textContent = classNames[parseInt(span.dataset.class, 10)];
         });
 
         // Tint each class's swatch dot with its overlay color, matching the markers
         // drawn over each object of that class.
-        for (let i = 0; i < state.rf.numClasses; i++) {
-            document.getElementById(`dot-class-${i}`)?.style.setProperty('--dot-color', state.labelColors[i] ?? '#888888');
+        for (let i = 0; i < q.numClasses; i++) {
+            document.getElementById(`dot-class-${i}`)?.style.setProperty('--dot-color', classColors[i] ?? '#888888');
         }
 
-        // Class selector interaction
-        function selectClass(index) {
-            const el = document.querySelector(`.class-item[data-class="${index}"]`);
-            if (!el) return;
-            document.querySelectorAll('.class-item').forEach(i => i.classList.remove('active'));
-            el.classList.add('active');
-            state.currentClass = index;
-        }
+        // Class selection — items call q.setClass; the highlight follows the event.
         document.querySelectorAll('.class-item').forEach(el => {
-            el.onclick = () => selectClass(parseInt(el.dataset.class, 10));
+            el.onclick = () => q.setClass(parseInt(el.dataset.class, 10));
+        });
+        q.addEventListener('classchanged', (e) => {
+            document.querySelectorAll('.class-item').forEach(el =>
+                el.classList.toggle('active', parseInt(el.dataset.class, 10) === e.detail.index));
         });
 
         // Swatch dot — toggles that class's on-canvas centroid markers. Cheap: just
@@ -629,45 +576,37 @@
             dot.onclick = (e) => {
                 e.stopPropagation(); // don't also re-select the class
                 const idx = parseInt(dot.dataset.class, 10);
-                const visible = !state.classMarkersVisible[idx];
-                state.classMarkersVisible[idx] = visible;
-                dot.classList.toggle('hidden', !visible);
-                dot.setAttribute('aria-pressed', String(visible));
-                state.images.forEach(img => renderCentroids(state, img));
+                q.setMarkersVisible(idx, !q.getMarkersVisible()[idx]);
             };
         });
+        q.addEventListener('markersvisibilitychanged', (e) => {
+            const dot = document.getElementById(`dot-class-${e.detail.index}`);
+            dot?.classList.toggle('hidden', !e.detail.visible);
+            dot?.setAttribute('aria-pressed', String(e.detail.visible));
+        });
 
-        // Class rename — persist on blur. Clicking into the name to edit shouldn't
-        // interfere with class selection (the item's onclick just marks it active).
-        // An empty/whitespace name falls back to the default so we never render a
-        // blank label or persist "".
+        // Class rename — persist on blur through q.setClassName, which trims,
+        // falls back to the default for empty/whitespace names (so we never
+        // render a blank label or persist ""), and saves the settings. The span
+        // is rewritten with whatever name was actually stored.
         document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
             span.onblur = () => {
                 const idx = parseInt(span.dataset.class, 10);
-                const name = span.textContent.trim();
-                state.classNames[idx] = name || `Class ${idx + 1}`;
-                span.textContent = state.classNames[idx];
-                saveSettings(state);
+                span.textContent = q.setClassName(idx, span.textContent);
             };
         });
 
         // Class color pickers — recolor live as the user drags in the native
         // picker (oninput, not change), mirroring how the contrast slider drives
-        // setWindow on every tick; setColors is just as cheap (uniform write + repaint).
+        // setWindow on every tick; q.setClassColor is just as cheap per image
+        // (uniform write + repaint, no recompile). The dot tint follows the event.
         document.querySelectorAll('.color-box').forEach(input => {
             input.onclick = (e) => e.stopPropagation(); // don't also re-select the class
-            input.oninput = (e) => {
-                const idx = parseInt(input.dataset.class, 10);
-                state.labelColors[idx] = e.target.value;
-                document.getElementById(`dot-class-${idx}`)?.style.setProperty('--dot-color', e.target.value);
-                state.images.forEach(img => {
-                    img.backend.setColors(state.labelColors);
-                    redrawLabels(state, img);
-                    // Repaint cached centroid markers so they recolor live too.
-                    renderCentroids(state, img);
-                });
-                saveSettings(state);
-            };
+            input.oninput = (e) => q.setClassColor(parseInt(input.dataset.class, 10), e.target.value);
+        });
+        q.addEventListener('classcolorchanged', (e) => {
+            document.getElementById(`dot-class-${e.detail.index}`)
+                ?.style.setProperty('--dot-color', e.detail.color);
         });
 
         // Hotkeys (see cheatsheet): [ / ] resize brush, 1-9 select class, P/E/G switch tool.
@@ -678,27 +617,18 @@
             if (e.ctrlKey || e.metaKey || e.altKey) return;
 
             if (e.key === '[') {
-                setBrushSize(parseInt(brushRange.value, 10) - 1);
+                q.setBrushSize(q.brushSize - 1);
             } else if (e.key === ']') {
-                setBrushSize(parseInt(brushRange.value, 10) + 1);
+                q.setBrushSize(q.brushSize + 1);
             } else if (e.key === 'p' || e.key === 'P' || e.key === 'b' || e.key === 'B') {
-                selectTool('paint');
+                q.setTool('paint');
             } else if (e.key === 'e' || e.key === 'E') {
-                selectTool('erase');
+                q.setTool('erase');
             } else if (e.key === 'g' || e.key === 'G') {
-                selectTool('grab');
+                q.setTool('grab');
             } else if (e.key >= '1' && e.key <= '9') {
-                selectClass(parseInt(e.key, 10) - 1);
+                q.setClass(parseInt(e.key, 10) - 1);
             }
-        });
-
-        // Class name edits — persist into state.classNames on blur, mirroring
-        // how the color pickers persist into state.labelColors, so exports
-        // (e.g. exportIlp) can read live names straight off state.
-        document.querySelectorAll('.class-item span[contenteditable]').forEach((span, idx) => {
-            span.onblur = () => {
-                state.classNames[idx] = span.textContent.trim() || `Class ${idx + 1}`;
-            };
         });
 
         // Export
@@ -716,12 +646,11 @@
             btnExport.innerText = 'Training…';
             try {
                 btnExport.innerText = 'Exporting…';
-                const zipBlob = await zipImages(
-                    state.images,
-                    exportSeg,
-                    exportProb,
-                    (metadata) => btnExport.innerText = metadata.percent.toFixed(2) + "%",
-                );
+                const zipBlob = await q.exportZip({
+                    seg: exportSeg,
+                    prob: exportProb,
+                    onProgress: (metadata) => btnExport.innerText = metadata.percent.toFixed(2) + "%",
+                });
 
                 if (!zipBlob) throw Error('zip is empty, nothing to export')
 
@@ -737,9 +666,9 @@
             }
         };
 
-        // Export .ilp — same entry point as Ctrl+S (see saveIlpProject above),
-        // reading class names from state.classNames (kept in sync with the
-        // class selector's contenteditable spans, see above).
+        // Export .ilp — same entry point as Ctrl+S (see saveIlpProject above).
+        // q.exportIlp reads live class names off the app core (kept in sync with
+        // the class selector's contenteditable spans via q.setClassName, see above).
         document.getElementById('btnExportIlp').onclick = () => saveIlpProject();
     }
 

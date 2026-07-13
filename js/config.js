@@ -32,6 +32,26 @@ export const RF_CONFIG = { numTrees: 8, maxDepth: 8, numClasses: NUM_CLASSES };
 // Random Forest's feature stride is keyed off this value.
 export const NUM_FEATURES = 8;
 export const MIN_LABELS_TO_TRAIN = 5;
+
+// Brush radius bounds (in image pixels) shared by the brush control and the
+// [ / ] hotkeys. The paint handlers read the current size off state.brushSize;
+// these constants are the single source of truth for its valid range.
+export const BRUSH_SIZE_MIN = 1;
+export const BRUSH_SIZE_MAX = 32;
+export const BRUSH_SIZE_DEFAULT = 5;
+
+/**
+ * Clamps a requested brush size into [BRUSH_SIZE_MIN, BRUSH_SIZE_MAX], coercing
+ * non-numeric input to the default. Pure — shared by Quantosaurus.setBrushSize
+ * and any UI control that needs to sanitize user input before applying it.
+ * @param {*} size - Requested brush size (any type; coerced via Number()).
+ * @returns {number} An integer size within the valid range.
+ */
+export function clampBrushSize(size) {
+    const n = Math.round(Number(size));
+    if (!Number.isFinite(n)) return BRUSH_SIZE_DEFAULT;
+    return Math.min(BRUSH_SIZE_MAX, Math.max(BRUSH_SIZE_MIN, n));
+}
 export const CAMERA_ZOOM_MIN = 0.1;
 export const CAMERA_ZOOM_MAX = 32;
 export const CAMERA_ZOOM_SENSITIVITY = 0.01;
