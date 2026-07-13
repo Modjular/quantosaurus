@@ -44,20 +44,34 @@ in a browser (see the `run`/`verify` skills for driving a browser check).
 
 ### Data flow
 
-`index.html`'s inline module owns the single shared `state` object (images array, the `FlatRandomForest`
-instance, current tool/class, camera transform) and wires up all top-level DOM event handlers. Every other
-module is a set of functions that take `state` (or a specific image's entry in `state.images`) as an explicit
-argument — there are no classes or singletons for app logic, only for the GPU backends and the `FlatRandomForest`.
+`Quantosaurus` (`js/quantosaurus.js`) is the app core: a class (extending `EventTarget`) that owns the single
+shared `state` object (images array, the `FlatRandomForest` instance, current tool/class, brush size, camera
+transform) and attaches to a board element. It's the deliberate class exception alongside the GPU backends and
+`FlatRandomForest`; every other module is still a set of functions that take `state` (or a specific image's
+entry in `state.images`) as an explicit argument. The class is a thin wrapper: its methods call those module
+functions and then dispatch a `CustomEvent` for the change. All UI is a *subscriber* — nothing reaches into
+the app core's internals. `index.html`'s inline module constructs one instance, wires the taskbar controls to
+its methods, and subscribes to its events; `js/ui.js:bindChrome(q)` subscribes the count badges / save
+indicator / training cursor the same way. This is what makes the board embeddable (e.g. in a notebook): a host
+page can `new Quantosaurus(div)` and `addEventListener` for results without any of the built-in chrome.
+
+**Event catalog** (all `CustomEvent`s on the instance; see the header of `quantosaurus.js` for payload shapes):
+`imageloadstart`/`imageadded`/`imageloaderror`/`imageremoved`/`imagereordered`, `labelschanged`, `dirtychange`,
+`toolchanged`/`brushsizechanged`/`sigmachanged`/`classchanged`, `classcolorchanged`/`classnamechanged`/
+`markersvisibilitychanged`, `trainingstart`/`trainingcomplete`, and `statscomputed` (carries per-class counts +
+per-image detected objects). Modules dispatch through `state.events?.dispatchEvent(...)`, optional-chained so
+the CPU unit tests can import `images.js`/`training.js` under Node without a dispatch target.
 
 Per-image state (`state.images[i]`) carries: the loaded `intensityArray` (raw pixel values, not normalized),
 its GPU `backend` instance, `labels` (sparse `{x, y, cls}` painted by the user), the display `windowLo`/`windowHi`
-contrast bounds, and the DOM nodes for its canvas tile and sidebar row.
+contrast bounds, and the DOM nodes for its canvas tile (the tile carries its own hover controls — reorder /
+contrast / delete; there is no separate sidebar).
 
 The core loop: user paints labels (`images.js:paint`) → `training.js:scheduleTraining` debounces
 (`TRAIN_DEBOUNCE_MS`) → `trainAndPredictAll` gathers per-pixel features for every labeled pixel across all
 images (`backend.gatherFeaturesForTraining`), trains one `FlatRandomForest` shared across all images, then
 reruns `backend.runInference` per image, then recomputes per-class object counts via connected-component
-labeling + stats for the sidebar badges.
+labeling + stats, emitted as `statscomputed` for the count chip.
 
 ### GPU backend interface
 

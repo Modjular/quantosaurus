@@ -3,6 +3,7 @@ import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
 import { scheduleTraining } from './training.js';
+import { openContrastPopover } from './contrast.js';
 
 // Dispatches a CustomEvent on the owning Quantosaurus instance (state.events).
 // Optional-chained so state objects without a dispatch target (unit tests,
@@ -57,6 +58,36 @@ async function initializeBackend(canvas, labelColors) {
   // 3. Final error handling
   alert("Your browser does not support the required graphics APIs (WebGPU or WebGL2).");
   throw new Error("No compatible rendering backend found.");
+}
+
+/**
+ * Builds the floating controls overlaid on one image tile: reorder left/right,
+ * contrast, and delete. Buttons call the image-lifecycle functions directly
+ * with `state` (the tile owns them, like the paint handlers) — the contrast
+ * button anchors its popover to itself.
+ * @param {Object} state - Shared app state.
+ * @param {string} imgId - Id of the image this tile represents.
+ * @returns {HTMLDivElement} The controls overlay (not yet attached).
+ */
+function buildTileControls(state, imgId) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tile-controls';
+
+    const mk = (cls, glyph, title, onClick) => {
+        const b = document.createElement('button');
+        b.className   = `tile-btn ${cls}`;
+        b.textContent = glyph;
+        b.title       = title;
+        b.onclick     = (e) => { e.stopPropagation(); onClick(b); };
+        return b;
+    };
+
+    wrap.appendChild(mk('tile-reorder', '‹', 'Move earlier', () => reorderImage(state, imgId, -1)));
+    wrap.appendChild(mk('tile-reorder', '›', 'Move later',   () => reorderImage(state, imgId, +1)));
+    wrap.appendChild(mk('tile-contrast', '◐', 'Adjust contrast', (btn) => openContrastPopover(state, imgId, btn)));
+    wrap.appendChild(mk('tile-delete', '✕', 'Remove image', () => deleteImage(state, imgId)));
+
+    return wrap;
 }
 
 /**
@@ -134,10 +165,16 @@ export async function addImage(state, file) {
     tileLabel.className   = 'image-tile-label';
     tileLabel.textContent = `${file.name} ${w}x${h}`;
 
+    // Per-tile controls (reorder ‹ ›, contrast ◐, delete ✕) — revealed on hover
+    // (or always, on coarse pointers; see .tile-controls in style.css). These
+    // replace the old sidebar row's buttons now that the board is the only view.
+    const controls = buildTileControls(state, imgId);
+
     container.appendChild(gpuCanvas);
     container.appendChild(labelCanvas);
     container.appendChild(overlayCanvas);
     container.appendChild(tileLabel);
+    container.appendChild(controls);
     state.board.appendChild(container);
 
     let backend = null;

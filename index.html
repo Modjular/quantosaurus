@@ -10,15 +10,6 @@
 </head>
 <body class="mode-grab">
 
-<div id="top-bar">
-    <h2>🦖 Quantosaurus</h2>
-    <div id="status">No images loaded. Drag &amp; drop onto the canvas.</div>
-    <div style="flex: 1;"></div>
-    <button id="btnCheatsheet" class="btn-subtle">❓&nbsp;&nbsp;Cheatsheet</button>
-    <button id="btnThemeToggle" class="btn-subtle">☀️&nbsp;&nbsp;Light Mode</button>
-    <button id="btnFeedback" class="btn-subtle">💬&nbsp;&nbsp;Feedback</button>
-</div>
-
 <div id="feedbackModal" class="modal-overlay" style="display: none;">
     <div class="modal-content heavy-panel">
         <div class="heavy-panel-header">
@@ -137,98 +128,111 @@
     </div>
 </div>
 
-<div id="main-container">
+<!-- Hidden file input, opened by the empty-state label and the taskbar's
+     "Add images…" action. Drag-and-drop onto the viewport is the primary path. -->
+<input type="file" id="fileInput" accept=".tif,.tiff,.png,.jpg,.jpeg" multiple hidden>
 
-    <div id="sidebar">
-
-        <div class="sidebar-section" id="section-ingest">
-            <div class="section-header">Images</div>
-            
-            <input type="file" id="fileInput" accept=".tif,.tiff,.png,.jpg,.jpeg"
-                   multiple style="font-size:12px;">
-
-            <div id="img-empty">
-                Drop images onto the canvas<br>or use the file picker above.
-            </div>
-
-            <div id="image-list"></div>
+<!-- Export options modal (opened from the taskbar overflow menu). -->
+<div id="exportModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content heavy-panel">
+        <div class="heavy-panel-header">
+            <span class="heavy-panel-title">Export</span>
+            <button id="btnCloseExport" class="img-delete" style="background:none; padding:2px 6px;">✕</button>
         </div>
 
-        <div class="sidebar-section" id="section-train">
-            <div class="section-header">Train</div>
-
-            <div class="control-group">
-                <span class="control-label">Tools</span>
-                <div style="display:flex; gap:10px; align-items:end;">
-                    <div style="display:flex; gap:4px; flex:1;">
-                        <button class="tool-btn active" data-tool="grab" title="Grab (Pan)">🖐</button>
-                        <button class="tool-btn" data-tool="paint" title="Paint">🖌</button>
-                        <button class="tool-btn" data-tool="erase" title="Erase">🧽</button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="control-group">
-                <span class="control-label">Brush Size</span>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <input type="range" id="brushSizeRange" min="1" max="32" step="1" value="5">
-                    <span id="brushVal" style="min-width:30px; font-size:12px;">5</span>
-                </div>
-            </div>
-
-            <div class="control-group">
-                <span class="control-label">Classes</span>
-                <div class="class-selector"></div>
-            </div>
-
-            <div class="control-group">
-                <span class="control-label">Feature Scale (Sigma)</span>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <input type="range" id="sigmaRange" min="0.3" max="10.0" step="0.1" value="1.0">
-                    <span id="sigmaVal" style="min-width:30px; font-size:12px;">1.0</span>
-                </div>
-            </div>
+        <div class="control-group" style="margin-bottom: 12px;">
+            <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                <input type="checkbox" id="chkExportSeg" checked>
+                Segmentations
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                <input type="checkbox" id="chkExportProb">
+                Probabilities
+            </label>
         </div>
 
-        <div class="sidebar-section" id="section-export">
-            <div class="section-header">Export</div>
+        <button id="btnExportAll" class="btn-primary" style="width:100%;" disabled>
+            Export Loaded Images
+        </button>
+        <p class="hint" style="margin: 6px 0 14px 0;">
+            At least 5 labels are needed to train before export.
+        </p>
 
-            <div class="control-group">
-                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
-                    <input type="checkbox" id="chkExportSeg" checked>
-                    Segmentations
-                </label>
-                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
-                    <input type="checkbox" id="chkExportProb">
-                    Probabilities
-                </label>
-            </div>
+        <button id="btnExportIlp" class="btn-primary" style="width:100%;" disabled>
+            Export ilastik Project (.ilp)
+        </button>
+        <p class="hint" style="margin-top: 6px;">
+            Fully self-contained — images and labels are embedded in the file. Opens in
+            desktop ilastik, which retrains its own classifier on open. Ctrl/Cmd+S to save.
+        </p>
+    </div>
+</div>
 
-            <button id="btnExportAll" class="btn-primary" disabled>
-                Export Loaded Images
-            </button>
+<div id="viewport">
+    <div id="canvas-board"></div>
 
-            <p class="hint">
-                At least 5 labels are needed to train before export.
-            </p>
+    <!-- Centered drop target / file picker, shown only when no images are loaded. -->
+    <div id="empty-state">
+        <div class="empty-dino">🦖</div>
+        <div class="empty-title">Drop images to begin</div>
+        <div class="empty-sub">.tif, .png or .jpg — everything runs locally in your browser.</div>
+        <label for="fileInput" class="btn-primary empty-pick">Select Files</label>
+    </div>
+</div>
 
-            <button id="btnExportIlp" class="btn-primary" disabled>
-                Export ilastik Project (.ilp)
-            </button>
-            <div id="ilpSaveStatus" class="save-status"></div>
+<!-- Floating corner chrome (siblings of #viewport, never inside it — the
+     viewport's touch-action:none would otherwise swallow taps). -->
+<div id="dirty-chip" class="save-status" aria-live="polite"></div>
 
-            <p class="hint">
-                Fully self-contained — images and labels are embedded in the file. Opens in
-                desktop ilastik, which retrains its own classifier on open. Ctrl/Cmd+S to save.
-            </p>
-        </div>
+<div id="counts-chip"></div>
 
+<div id="loading-toast" aria-live="polite" hidden></div>
+
+<!-- Bottom-center floating taskbar — the single control surface. -->
+<div id="taskbar" role="toolbar" aria-label="Tools">
+    <div class="tb-group">
+        <button class="tool-btn active" data-tool="grab" title="Grab / Pan (G)">🖐</button>
+        <button class="tool-btn" data-tool="paint" title="Paint (P)">🖌</button>
+        <button class="tool-btn" data-tool="erase" title="Erase (E)">🧽</button>
     </div>
 
-    <div id="viewport">
-        <div id="canvas-board"></div>
+    <span class="tb-sep"></span>
+
+    <label class="tb-field" title="Brush size ( [ / ] )">
+        <span class="tb-field-label">Brush</span>
+        <input type="number" id="brushSizeInput" min="1" max="32" step="1" value="5">
+    </label>
+
+    <div id="classDropdown" class="tb-dropdown">
+        <button class="cd-trigger" aria-haspopup="true" aria-expanded="false" title="Active class">
+            <span class="cd-trigger-swatch"></span>
+            <span class="cd-trigger-name">Class 1</span>
+            <span class="cd-caret">▾</span>
+        </button>
+        <div class="cd-popup class-selector" hidden></div>
     </div>
 
+    <span class="tb-sep"></span>
+
+    <label class="tb-field tb-field-sigma" title="Feature scale (sigma)">
+        <span class="tb-field-label">Sigma</span>
+        <input type="range" id="sigmaRange" min="0.3" max="10.0" step="0.1" value="1.0">
+        <span id="sigmaVal">1.0</span>
+    </label>
+
+    <span class="tb-sep"></span>
+
+    <div id="overflowWrap" class="tb-dropdown">
+        <button id="btnOverflow" class="tool-btn" aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+        <div id="overflowMenu" hidden>
+            <button id="btnAddImages" class="overflow-item">🖼️&nbsp;&nbsp;Add images…</button>
+            <button id="btnOpenExport" class="overflow-item">⬇️&nbsp;&nbsp;Export…</button>
+            <div class="overflow-sep"></div>
+            <button id="btnCheatsheet" class="overflow-item">❓&nbsp;&nbsp;Cheatsheet</button>
+            <button id="btnThemeToggle" class="overflow-item">☀️&nbsp;&nbsp;Light Mode</button>
+            <button id="btnFeedback" class="overflow-item">💬&nbsp;&nbsp;Feedback</button>
+        </div>
+    </div>
 </div>
 <script type="module">
     import { Quantosaurus } from './js/quantosaurus.js';
@@ -504,15 +508,12 @@
             document.getElementById('sigmaVal').innerText = e.detail.sigma.toFixed(1);
         });
 
-        // Brush size — slider and [ / ] hotkeys both go through q.setBrushSize
-        // (which clamps); the slider + readout reflect the event.
-        const brushRange = document.getElementById('brushSizeRange');
-        const brushVal   = document.getElementById('brushVal');
-        brushRange.oninput = () => q.setBrushSize(parseInt(brushRange.value, 10));
-        q.addEventListener('brushsizechanged', (e) => {
-            brushRange.value   = e.detail.size;
-            brushVal.innerText = e.detail.size;
-        });
+        // Brush size — the number input and the [ / ] hotkeys both go through
+        // q.setBrushSize (which clamps); the input reflects the event, so its
+        // shown value is always the clamped one.
+        const brushInput = document.getElementById('brushSizeInput');
+        brushInput.onchange = () => q.setBrushSize(parseInt(brushInput.value, 10));
+        q.addEventListener('brushsizechanged', (e) => { brushInput.value = e.detail.size; });
 
         // Tools (Grab, Paint, Erase) — buttons call q.setTool; the active
         // highlight follows the toolchanged event (q handles the body cursor class).
@@ -524,33 +525,38 @@
                 b.classList.toggle('active', b.dataset.tool === e.detail.tool));
         });
 
-        // Setup class selector with stat badges. The forest owns the class count
-        // (q.numClasses); colors come from the mutable palette q owns, falling
-        // back to neutral gray if fewer colors than classes are defined.
+        // Setup the class dropdown (color swatch + editable name + selection)
+        // and the upper-right counts chip (per-class object count + a marker
+        // toggle dot). The forest owns the class count (q.numClasses); colors
+        // come from the mutable palette q owns, falling back to neutral gray.
         // The color swatch is a native <input type="color">, which always emits
-        // #rrggbb hex — palette entries are expected to stay hex from this point
-        // on so they round-trip through the picker cleanly.
+        // #rrggbb hex — palette entries stay hex so they round-trip cleanly.
         const classColors = q.getClassColors();
         const classNames  = q.getClassNames();
-        document.querySelector('.class-selector').innerHTML =
+
+        // Dropdown popup: one selectable row per class.
+        document.querySelector('.cd-popup').innerHTML =
             Array.from({ length: q.numClasses }, (_, index) => {
                 const color = classColors[index] ?? '#888888';
                 return `
             <div class="class-item ${index === 0 ? 'active' : ''}" data-class="${index}">
-                <input type="color" class="color-box" data-class="${index}" value="${color}" title="Click to change color">
+                <input type="color" class="color-box" data-class="${index}" value="${color}" title="Class color">
                 <span contenteditable data-class="${index}"></span>
-                <div class="class-count">
-                    <span class="class-count-number" id="stat-class-${index}">0</span>
-                    <button type="button"class="class-count-dot" id="dot-class-${index}" data-class="${index}"
-                            title="Toggle markers on canvas" aria-pressed="true"></button>
-                </div>
-            </div>
-        `;
+            </div>`;
             }).join('');
+
+        // Counts chip: one badge per class (count + marker-toggle dot).
+        document.getElementById('counts-chip').innerHTML =
+            Array.from({ length: q.numClasses }, (_, index) => `
+            <div class="cc-item" data-class="${index}">
+                <button type="button" class="class-count-dot" id="dot-class-${index}" data-class="${index}"
+                        title="Toggle markers on canvas" aria-pressed="true"></button>
+                <span class="class-count-number" id="stat-class-${index}">0</span>
+            </div>`).join('');
 
         // Fill class names via textContent (not innerHTML above) so persisted, user-
         // supplied names can't inject markup into the class selector.
-        document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
+        document.querySelectorAll('.cd-popup .class-item span[contenteditable]').forEach(span => {
             span.textContent = classNames[parseInt(span.dataset.class, 10)];
         });
 
@@ -560,21 +566,33 @@
             document.getElementById(`dot-class-${i}`)?.style.setProperty('--dot-color', classColors[i] ?? '#888888');
         }
 
-        // Class selection — items call q.setClass; the highlight follows the event.
-        document.querySelectorAll('.class-item').forEach(el => {
+        // Dropdown trigger reflects the active class (swatch + name).
+        const cdSwatch = document.querySelector('.cd-trigger-swatch');
+        const cdName   = document.querySelector('.cd-trigger-name');
+        function updateClassTrigger() {
+            const i = q.currentClass;
+            cdSwatch.style.background = q.getClassColors()[i] ?? '#888888';
+            cdName.textContent = q.getClassNames()[i] ?? `Class ${i + 1}`;
+        }
+        updateClassTrigger();
+
+        // Class selection — clicking a row (including its name) makes that class
+        // active. The dropdown stays open so colors/names can be tweaked in the
+        // same session; it dismisses via the trigger, an outside click, or Escape.
+        document.querySelectorAll('.cd-popup .class-item').forEach(el => {
             el.onclick = () => q.setClass(parseInt(el.dataset.class, 10));
         });
         q.addEventListener('classchanged', (e) => {
-            document.querySelectorAll('.class-item').forEach(el =>
+            document.querySelectorAll('.cd-popup .class-item').forEach(el =>
                 el.classList.toggle('active', parseInt(el.dataset.class, 10) === e.detail.index));
+            updateClassTrigger();
         });
 
-        // Swatch dot — toggles that class's on-canvas centroid markers. Cheap: just
-        // re-runs the existing 2D canvas redraw from already-cached detected objects,
-        // no GPU/backend call or stats re-download.
+        // Marker-toggle dot — toggles that class's on-canvas centroid markers.
+        // Cheap: re-runs the 2D canvas redraw from already-cached objects, no
+        // GPU/backend call or stats re-download.
         document.querySelectorAll('.class-count-dot').forEach(dot => {
-            dot.onclick = (e) => {
-                e.stopPropagation(); // don't also re-select the class
+            dot.onclick = () => {
                 const idx = parseInt(dot.dataset.class, 10);
                 q.setMarkersVisible(idx, !q.getMarkersVisible()[idx]);
             };
@@ -589,25 +607,93 @@
         // falls back to the default for empty/whitespace names (so we never
         // render a blank label or persist ""), and saves the settings. The span
         // is rewritten with whatever name was actually stored.
-        document.querySelectorAll('.class-item span[contenteditable]').forEach(span => {
+        document.querySelectorAll('.cd-popup .class-item span[contenteditable]').forEach(span => {
+            // No stopPropagation: clicking the name still selects the row's class
+            // (it fills most of the row) and places the caret for editing.
             span.onblur = () => {
                 const idx = parseInt(span.dataset.class, 10);
                 span.textContent = q.setClassName(idx, span.textContent);
+                updateClassTrigger();
             };
         });
 
         // Class color pickers — recolor live as the user drags in the native
-        // picker (oninput, not change), mirroring how the contrast slider drives
-        // setWindow on every tick; q.setClassColor is just as cheap per image
-        // (uniform write + repaint, no recompile). The dot tint follows the event.
-        document.querySelectorAll('.color-box').forEach(input => {
-            input.onclick = (e) => e.stopPropagation(); // don't also re-select the class
+        // picker (oninput, not change); q.setClassColor is cheap per image
+        // (uniform write + repaint, no recompile). Dot tint + trigger follow the event.
+        document.querySelectorAll('.cd-popup .color-box').forEach(input => {
+            input.onclick = (e) => e.stopPropagation(); // don't also select+close
             input.oninput = (e) => q.setClassColor(parseInt(input.dataset.class, 10), e.target.value);
         });
         q.addEventListener('classcolorchanged', (e) => {
             document.getElementById(`dot-class-${e.detail.index}`)
                 ?.style.setProperty('--dot-color', e.detail.color);
+            updateClassTrigger();
         });
+
+        // ── Class dropdown open/close ─────────────────────────────────────
+        const classDropdown = document.getElementById('classDropdown');
+        const cdTrigger = classDropdown.querySelector('.cd-trigger');
+        const cdPopup   = classDropdown.querySelector('.cd-popup');
+        function closeClassDropdown() {
+            cdPopup.hidden = true;
+            cdTrigger.setAttribute('aria-expanded', 'false');
+        }
+        function toggleClassDropdown() {
+            const open = cdPopup.hidden;
+            closeAllMenus();
+            if (open) {
+                cdPopup.hidden = false;
+                cdTrigger.setAttribute('aria-expanded', 'true');
+            }
+        }
+        cdTrigger.onclick = (e) => { e.stopPropagation(); toggleClassDropdown(); };
+
+        // ── Taskbar overflow menu ─────────────────────────────────────────
+        const overflowWrap = document.getElementById('overflowWrap');
+        const btnOverflow  = document.getElementById('btnOverflow');
+        const overflowMenu = document.getElementById('overflowMenu');
+        function closeOverflow() {
+            overflowMenu.hidden = true;
+            btnOverflow.setAttribute('aria-expanded', 'false');
+        }
+        btnOverflow.onclick = (e) => {
+            e.stopPropagation();
+            const open = overflowMenu.hidden;
+            closeAllMenus();
+            if (open) { overflowMenu.hidden = false; btnOverflow.setAttribute('aria-expanded', 'true'); }
+        };
+
+        // One dismiss path for every floating menu: click anywhere else, or Escape.
+        function closeAllMenus() { closeClassDropdown(); closeOverflow(); }
+        document.addEventListener('click', closeAllMenus);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllMenus(); });
+        classDropdown.addEventListener('click', (e) => e.stopPropagation());
+        overflowWrap.addEventListener('click', (e) => e.stopPropagation());
+
+        // ── Add images ────────────────────────────────────────────────────
+        // The empty-state's <label for="fileInput"> opens the picker directly;
+        // this taskbar item is the path once images already fill the board.
+        // (Empty-state visibility itself is owned by ui.js syncUI.)
+        const fileInput = document.getElementById('fileInput');
+        document.getElementById('btnAddImages').onclick = () => { closeOverflow(); fileInput.click(); };
+
+        // ── Loading toast ─────────────────────────────────────────────────
+        // Large TIFFs decode slowly and the board tile only appears once the
+        // load finishes, so show a brief toast in between. Counts concurrent
+        // loads so a multi-file drop clears the toast only when all are done.
+        const loadingToast = document.getElementById('loading-toast');
+        let loadingCount = 0;
+        q.addEventListener('imageloadstart', (e) => {
+            loadingCount++;
+            loadingToast.textContent = loadingCount > 1 ? `Loading ${loadingCount} images…` : `Loading ${e.detail.name}…`;
+            loadingToast.hidden = false;
+        });
+        const doneLoading = () => {
+            loadingCount = Math.max(0, loadingCount - 1);
+            if (loadingCount === 0) loadingToast.hidden = true;
+        };
+        q.addEventListener('imageadded', doneLoading);
+        q.addEventListener('imageloaderror', doneLoading);
 
         // Hotkeys (see cheatsheet): [ / ] resize brush, 1-9 select class, P/E/G switch tool.
         // Ignored while typing into an input/textarea or renaming a class (contenteditable).
@@ -630,6 +716,19 @@
                 q.setClass(parseInt(e.key, 10) - 1);
             }
         });
+
+        // Overflow menu items each dismiss the menu (their clicks are stopped
+        // from bubbling to the document-level dismiss handler by overflowWrap).
+        overflowMenu.querySelectorAll('.overflow-item').forEach(b =>
+            b.addEventListener('click', closeOverflow));
+
+        // ── Export modal ──────────────────────────────────────────────────
+        const exportModal = document.getElementById('exportModal');
+        const openExport  = () => { exportModal.style.display = 'flex'; };
+        const closeExport = () => { exportModal.style.display = 'none'; };
+        document.getElementById('btnOpenExport').onclick = openExport;
+        document.getElementById('btnCloseExport').onclick = closeExport;
+        exportModal.onclick = (e) => { if (e.target === exportModal) closeExport(); };
 
         // Export
         const btnExport = document.getElementById('btnExportAll');

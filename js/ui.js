@@ -1,66 +1,28 @@
 /**
- * Wires the sidebar/top-bar chrome onto a Quantosaurus instance's events: the
- * per-image sidebar rows (with loading state), the status line, the training
- * indicator, the save indicator, and the per-class count badges. The chrome is
- * a pure subscriber — every mutation goes back through methods on `q`, so this
- * whole layer can be swapped out (or omitted, in an embed) without touching
- * the app core.
+ * Wires the floating chrome onto a Quantosaurus instance's events: the count
+ * badges, the training indicator, the save indicator, the export-button enable
+ * state, and image-load errors. The chrome is a pure subscriber — every
+ * mutation goes back through methods on `q`, so this whole layer can be swapped
+ * out (or omitted, in an embed) without touching the app core. The taskbar
+ * controls themselves are wired separately (see index.html's setupUI).
  * @param {import('./quantosaurus.js').Quantosaurus} q - The app instance.
  */
 export function bindChrome(q) {
     const state = q.state;
-    const rows = new Map(); // imgId -> sidebar row element
 
-    q.addEventListener('imageloadstart', (e) => {
-        const { id, name } = e.detail;
-        const row = createImageRow(id, name, {
-            onReorder: (dir)     => q.reorderImage(id, dir),
-            onDelete:  ()        => q.deleteImage(id),
-            onContrast: (anchor) => q.openContrast(id, anchor),
-        });
-        row.classList.add('loading');
-        document.getElementById('img-empty').style.display = 'none';
-        document.getElementById('image-list').appendChild(row);
-        rows.set(id, row);
-    });
-
-    q.addEventListener('imageadded', (e) => {
-        rows.get(e.detail.id)?.classList.remove('loading');
-        syncUI(state);
-    });
+    q.addEventListener('imageadded', () => syncUI(state));
+    q.addEventListener('imageremoved', () => syncUI(state));
 
     q.addEventListener('imageloaderror', (e) => {
-        const { id, message } = e.detail;
-        rows.get(id)?.remove();
-        rows.delete(id);
-        syncUI(state);
-        if (message) alert(message);
-    });
-
-    q.addEventListener('imageremoved', (e) => {
-        rows.get(e.detail.id)?.remove();
-        rows.delete(e.detail.id);
-        syncUI(state);
-    });
-
-    q.addEventListener('imagereordered', (e) => {
-        const { fromIndex, toIndex } = e.detail;
-        const list = document.getElementById('image-list');
-        const els  = [...list.children];
-        // Mirror the board-tile swap in images.js:reorderImage — the moved row
-        // goes before (moving up) or after (moving down) its neighbor.
-        if (toIndex < fromIndex) list.insertBefore(els[fromIndex], els[toIndex]);
-        else                     list.insertBefore(els[toIndex], els[fromIndex]);
-        updateSaveIndicator(state);
+        if (e.detail.message) alert(e.detail.message);
     });
 
     q.addEventListener('dirtychange', () => updateSaveIndicator(state));
 
     q.addEventListener('trainingstart', () => {
         // Give immediate feedback for the otherwise-silent await: a progress
-        // cursor + "Training…" status while the overlay recomputes, and the
-        // count badges wiped to a pulsing placeholder so the stale numbers
-        // don't just sit there.
+        // cursor while the overlay recomputes, and the count badges wiped to a
+        // pulsing placeholder so the stale numbers don't just sit there.
         setTrainingIndicator(state, true);
         setClassBadgesLoading();
     });
@@ -72,43 +34,30 @@ export function bindChrome(q) {
         if (animate) animateClassStatBadges(counts);
         else         updateClassStatBadges(counts);
     });
+
+    syncUI(state); // seed the initial empty/export state
 }
 
 /**
- * Refreshes all image-count-driven chrome (status line, export button, empty
- * state) in one call. Invoke after any change to state.images.
+ * Refreshes all image-count-driven chrome (export button, empty state, save
+ * indicator) in one call. Invoke after any change to state.images.
  * @param {Object} state - Shared app state.
  */
 export function syncUI(state) {
-    updateStatus(state);
     updateExportButtonCount(state);
     refreshEmptyState(state);
     updateSaveIndicator(state);
 }
 
-/** Updates the status line with the loaded-image count. @param {Object} state */
-export function updateStatus(state) {
-    const n = state.images.length;
-    document.getElementById('status').innerText =
-        n === 0 ? 'No images loaded. Drag & drop onto the canvas.'
-                : `${n} image${n !== 1 ? 's' : ''} loaded.`;
-}
-
 /**
- * Toggles the global "training in progress" affordance: a progress cursor (via a
- * body class) plus a status-line message. On turn-off it restores the normal
- * image-count status. Gives feedback while the overlay/probabilities recompute,
- * which is otherwise a silent await.
- * @param {Object} state - Shared app state (for restoring the status text).
+ * Toggles the global "training in progress" affordance: a progress cursor via a
+ * body class. Gives feedback while the overlay/probabilities recompute, which
+ * is otherwise a silent await.
+ * @param {Object} _state - Shared app state (unused; kept for call-site symmetry).
  * @param {boolean} on - Whether training is currently running.
  */
-export function setTrainingIndicator(state, on) {
+export function setTrainingIndicator(_state, on) {
     document.body.classList.toggle('training', on);
-    if (on) {
-        document.getElementById('status').innerText = 'Training…';
-    } else {
-        updateStatus(state);
-    }
 }
 
 /** Enables/labels the "Export Loaded Images" button by image count. @param {Object} state */
@@ -122,10 +71,10 @@ export function updateExportButtonCount(state) {
     if (ilpBtn) ilpBtn.disabled = n === 0;
 }
 
-/** Shows/hides the image-list empty-state placeholder. @param {Object} state */
+/** Shows/hides the centered empty-state drop target. @param {Object} state */
 export function refreshEmptyState(state) {
-    document.getElementById('img-empty').style.display =
-        state.images.length === 0 ? '' : 'none';
+    const el = document.getElementById('empty-state');
+    if (el) el.style.display = state.images.length === 0 ? '' : 'none';
 }
 
 // Handle of the in-flight count-up animation frame, so a new retrain (or a no-op
@@ -237,64 +186,4 @@ export function animateClassStatBadges(counts) {
     };
 
     _countupRaf = requestAnimationFrame(step);
-}
-
-/**
- * Builds the sidebar DOM row for one image. The controller supplies the
- * callbacks so this view stays decoupled from the image-lifecycle module.
- * @param {string} imgId - Image id, stored on the row's dataset.
- * @param {string} name - Display name.
- * @param {{onReorder: (direction: -1|1) => void, onDelete: () => void}} handlers
- * @returns {HTMLDivElement} The constructed row element (not yet attached).
- */
-export function createImageRow(imgId, name, { onReorder, onDelete, onContrast }) {
-    const row = document.createElement('div');
-    row.className  = 'img-row';
-    row.dataset.id = imgId;
-
-    const loadBar = document.createElement('div');
-    loadBar.className = 'img-loading-bar';
-
-    const header = document.createElement('div');
-    header.className = 'img-row-header';
-
-    const reorder = document.createElement('div');
-    reorder.className = 'img-reorder';
-    const btnUp   = document.createElement('button');
-    const btnDown = document.createElement('button');
-    btnUp.textContent   = '▲';
-    btnDown.textContent = '▼';
-    btnUp.title   = 'Move up';
-    btnDown.title = 'Move down';
-    btnUp.onclick   = () => onReorder(-1);
-    btnDown.onclick = () => onReorder(+1);
-    reorder.appendChild(btnUp);
-    reorder.appendChild(btnDown);
-
-    const nameEl = document.createElement('div');
-    nameEl.className   = 'img-name';
-    nameEl.textContent = name;
-    nameEl.title       = name;
-
-    const btnContrast = document.createElement('button');
-    btnContrast.className   = 'img-contrast';
-    btnContrast.textContent = '◐';
-    btnContrast.title       = 'Adjust contrast';
-    btnContrast.onclick     = (e) => { e.stopPropagation(); onContrast?.(btnContrast); };
-
-    const btnDel = document.createElement('button');
-    btnDel.className   = 'img-delete';
-    btnDel.textContent = '✕';
-    btnDel.title       = 'Remove image';
-    btnDel.onclick     = () => onDelete();
-
-    header.appendChild(reorder);
-    header.appendChild(nameEl);
-    header.appendChild(btnContrast);
-    header.appendChild(btnDel);
-
-    row.appendChild(loadBar);
-    row.appendChild(header);
-
-    return row;
 }
