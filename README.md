@@ -9,18 +9,23 @@ An open-source, browser-based pixel-classifier for counting cells in microscopy 
 
 ## About
 
-Quantosaurus loads a microscopy image (`.tif`, `.png`, `.jpg`), and as you paint a few pixel labels per class, it trains a random forest on GPU-computed filter features and live-previews the classification across the whole image. Once you're happy with the result, GPU connected-component labeling turns the classified pixels into discrete object counts per class.
+Quantosaurus loads a microscopy image (`.tif`, `.png`, `.jpg`) and counts the cells in it — entirely in your browser, on your GPU, with nothing uploaded to a server. It offers three tools spanning an easy-to-advanced range, so you can match the method to the image:
 
-Everything — filter computation, random-forest training/inference, and connected-component labeling — runs in the browser via WebGPU, with an automatic WebGL2 fallback for browsers without WebGPU support. There is no backend, no server-side processing, and your image data never leaves the machine.
+- **Threshold** (easy) — a single brightness cutoff, chosen automatically with Otsu or by hand. Instant, no training.
+- **Pixel Classifier** (medium) — paint a few example pixels and a random forest learns to classify the rest, live. For images where a plain threshold fails.
+- **Cellpose** (advanced) — the pretrained cyto3 deep-learning model, running in-browser on WebGPU, for crowded or touching cells. No training, no GPU server.
 
-**When to reach for it:** after you've outgrown ImageJ's threshold tool, but before you need something heavier like Ilastik's Object Classifiers or Cellpose.
+A [landing page](https://quantosaur.us/) helps you pick; each tool is its own page (`classifier.html`, `threshold.html`, `cellpose.html`).
+
+Everything — filter computation, thresholding, random-forest training/inference, the Cellpose network, and connected-component labeling — runs in the browser via WebGPU (with an automatic WebGL2 fallback for the threshold and classifier tools). There is no backend, no server-side processing, and your image data never leaves the machine.
 
 ### Features
 
-- `.tif`, `.png`, and `.jpg` support
-- Live preview of classification as you label, thanks to GPU acceleration
-- Per-class object counts via GPU connected-component labeling
-- Segmentation, probability, and label exports
+- Three segmentation methods: Otsu **thresholding**, a trainable **pixel classifier**, and the **Cellpose** cyto3 model
+- `.tif` (incl. 16-bit and multichannel), `.png`, and `.jpg` support
+- Live preview as you threshold or paint, thanks to GPU acceleration
+- Object counts via GPU connected-component labeling (or Cellpose instance labels, which keep touching cells separate)
+- Segmentation-mask, probability-map, instance-label, and per-object CSV exports
 - Figma-style canvas navigation (pan/zoom)
 
 ### Planned
@@ -28,17 +33,19 @@ Everything — filter computation, random-forest training/inference, and connect
 - [ ] 3D support
 - [x] ~~Contrast sliders~~
 - [x] ~~`.ilp` export~~
+- [x] ~~Thresholding & Cellpose tools~~
 - [ ] `.ilp` import
 - [ ] Bulk inference.
 
-### Not Planned
-A good tool should do one thing well. There is no plan to add neural networks or LLMs or AI. There is no plan to go beyond the most common bio-imaging formats like tif or zarr (see the roadmap). Suggestions are still welcome but keep in mind the [Design Goals](#Design-goals).
+### Design stance
+A good tool should do one thing well — here, counting cells — and stay simple, local, and dependency-light. The three tools share one small, framework-free codebase; the Cellpose network is hand-written WGSL with its weights vendored into the repo, not a cloud API or an npm dependency. There is no plan to go beyond the most common 2D bio-imaging formats (see the roadmap), or to add server-side processing, accounts, or telemetry. Suggestions are welcome — keep the [Design Goals](#Design-goals) in mind.
 
 ### Architecture
 
 - **No backend, no database.** State lives in memory in the browser tab for the session; nothing is persisted or transmitted except what you explicitly export.
-- **Per-image GPU pipeline:** a separable Gaussian-derivative filter bank computes 8 per-pixel features → a `FlatRandomForest` (trained on the CPU from your labels, uploaded as a GPU buffer) classifies every pixel in a compute pass → connected-component labeling + a stats pass turn classified regions into per-object counts and metrics → a composite pass renders the overlay.
-- **Two interchangeable GPU backends** (`js/backends/webgpu.js`, `js/backends/webgl2.js`) implement the same interface; WebGPU is preferred, with WebGL2 as a fallback for browsers that lack it.
+- **Three apps, one shared pipeline.** Each tool is its own HTML page over a shared per-image GPU pipeline. All three write a per-pixel **probability buffer**, and everything downstream — the composite overlay, connected-component labeling, per-object stats, and exports — is method-agnostic. The classifier fills that buffer with a `FlatRandomForest` evaluated over an 8-channel Gaussian-derivative feature bank; thresholding fills it from an Otsu (or manual) cutoff; Cellpose fills it from a hand-written WGSL forward pass of the cyto3 network and uploads instance labels directly (bypassing connected-components, so touching cells stay separate).
+- **Two interchangeable GPU backends** (`js/backends/webgpu.js`, `js/backends/webgl2.js`) implement the same interface; WebGPU is preferred, with WebGL2 as a fallback. Cellpose is WebGPU-only (its WGSL network has no WebGL2 port); thresholding and the classifier run on either.
+- **Shared chrome, method-specific UI.** `js/app.js` and `js/chrome.js` provide the bootstrap and app-agnostic UI (theme, feedback, cheatsheet, file ingest, nav) every page reuses; each page adds only its own controls.
 - **Intensities stay in native units.** Loaded pixel values keep the source image's raw range (e.g. 0–65535 for 16-bit TIFFs) rather than being normalized to 0–1, so contrast windowing happens on the GPU from real values.
 
 For the full internals — data flow, the GPU backend contract, random-forest buffer layout, stats struct layout — see [`CLAUDE.md`](./CLAUDE.md); it's written as engineering documentation, not just AI-assistant config.
@@ -72,7 +79,14 @@ node js/rf.test.mjs               # FlatRandomForest: training, flat-buffer layo
 node js/io.test.mjs               # intensityToRGBA normalization
 node js/backends/webgl2.test.mjs  # CCL + stats reference implementations
 node js/config.test.mjs           # NUM_CLASSES / DEFAULT_LABEL_COLORS invariants
+node js/settings.test.mjs         # sanitizeSettings validation
+node js/training.test.mjs         # decodeObjects (stats -> centroids)
+node js/ilp.test.mjs              # buildIlpProject HDF5 output
+node js/objects.test.mjs          # object-stats decode + CSV
+node js/threshold.test.mjs        # Otsu threshold
 ```
+
+The Cellpose WGSL network is validated separately, against a PyTorch reference, in its upstream repo (see `js/vendor/cellpose/`), not by these Node tests.
 
 GPU-dependent code (actual draw/dispatch calls in the WebGPU/WebGL2 backends) isn't unit-testable this way and needs manual verification in a browser. There is no CI configured yet.
 
