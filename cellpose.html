@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cellpose — Quantosaurus</title>
+    <meta name="description" content="Run the Cellpose cyto3 deep-learning cell segmentation model entirely in your browser on WebGPU. No install, no training, no GPU server — just load an image and press Run.">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%22100%22>🦖</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="mode-grab">
+
+<div id="top-bar">
+    <a href="index.html" class="brand-link"><h2>🦖 Quantosaurus</h2></a>
+    <nav id="app-nav">
+        <a href="classifier.html" data-page="classifier">Classifier</a>
+        <a href="threshold.html" data-page="threshold">Threshold</a>
+        <a href="cellpose.html" data-page="cellpose">Cellpose</a>
+    </nav>
+    <div id="status">No images loaded. Drag &amp; drop onto the canvas.</div>
+    <div style="flex: 1;"></div>
+    <button id="btnCheatsheet" class="btn-subtle">❓&nbsp;&nbsp;Help</button>
+    <button id="btnThemeToggle" class="btn-subtle">☀️&nbsp;&nbsp;Light Mode</button>
+    <button id="btnFeedback" class="btn-subtle">💬&nbsp;&nbsp;Feedback</button>
+</div>
+
+<div id="feedbackModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content heavy-panel">
+        <div class="heavy-panel-header">
+            <span class="heavy-panel-title">Send Feedback</span>
+            <button id="btnCloseFeedback" class="img-delete" style="background:none; padding:2px 6px;">✕</button>
+        </div>
+        <p class="heavy-panel-desc" style="margin-bottom: 10px;">Help improve Quantosaurus! Let us know what's on your mind.</p>
+        <textarea id="feedbackText" placeholder="Love the tool, but export is slow..." rows="3" style="resize:none;"></textarea>
+        <input type="text" id="feedbackEmail" placeholder="Email address (optional)">
+        <label style="display:flex; align-items:center; gap:8px; font-size: 11px; color: var(--text-muted); margin-bottom: 12px; cursor: pointer;">
+            <input type="checkbox" id="chkDebug" checked>
+            Include technical debug info (browser, screen size, WebGPU support)
+        </label>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button id="btnSubmitFeedback" class="btn-primary" style="padding: 6px 12px;">Submit</button>
+        </div>
+    </div>
+</div>
+
+<div id="cheatsheetModal" class="modal-overlay" style="display: none;">
+    <div class="cheatsheet-paper">
+        <div class="cs-header">
+            <div>
+                <h1 style="margin: 0; font-size: 24px;">Cellpose 🔬</h1>
+                <p style="margin: 4px 0 0 0; color: var(--text-muted); font-size: 14px;">
+                    A pretrained deep-learning model for tough, crowded cells — running in your browser.
+                </p>
+            </div>
+            <div class="cs-header-actions">
+                <button id="btnPrintCheatsheet" class="btn-subtle" style="padding: 4px 10px; font-size: 12px;">🖨️&nbsp;&nbsp;Print</button>
+                <button id="btnCloseCheatsheet" class="btn-close-cs" title="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="cs-section">
+            <h3>When to use it</h3>
+            <p>Cellpose is the <strong>vanilla cyto3 model</strong> — the same weights the desktop tool ships with, no training required. Reach for it when cells touch or overlap and thresholding merges them into blobs. It's the heaviest option: the model is ~26&nbsp;MB (downloaded once, then cached) and each image takes a few seconds to run.</p>
+        </div>
+
+        <div class="cs-section cs-instructions">
+            <h3>Instructions</h3>
+            <div class="cs-steps">
+                <div class="cs-step">
+                    <div class="cs-step-number">1</div>
+                    <div class="cs-step-text"><strong>Load images</strong><br>Drag your microscopy images (.tif, .png, .jpg) onto the canvas.</div>
+                </div>
+                <div class="cs-step">
+                    <div class="cs-step-number">2</div>
+                    <div class="cs-step-text"><strong>Set the cell size</strong><br>Enter the approximate cell <em>diameter</em> in pixels. This is the single most important setting — get it roughly right and the rest usually takes care of itself.</div>
+                </div>
+                <div class="cs-step">
+                    <div class="cs-step-number">3</div>
+                    <div class="cs-step-text"><strong>Press Run</strong><br>Every cell is outlined and counted. Touching cells stay separate — that's what Cellpose is for.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="cs-section">
+            <h3>Which channel do I pick?</h3>
+            <p><strong>If your image is a single channel, you're already done</strong> — leave it as-is and press Run. Picking a channel never breaks anything; at worst it changes the result, and you can switch and re-run freely. For two-channel images, set <em>Cytoplasm</em> to the channel showing the cell body and <em>Nucleus</em> to the nuclear stain (or leave Nucleus as "None"). Cellpose was trained on cytoplasm+nucleus pairs, but works well on a single channel too.</p>
+        </div>
+    </div>
+</div>
+
+<div id="main-container">
+
+    <div id="sidebar">
+
+        <div class="sidebar-section" id="section-ingest">
+            <div class="section-header">Images</div>
+            <input type="file" id="fileInput" accept=".tif,.tiff,.png,.jpg,.jpeg" multiple style="font-size:12px;">
+            <div id="img-empty">
+                Drop images onto the canvas<br>or use the file picker above.
+            </div>
+            <div id="image-list"></div>
+        </div>
+
+        <div class="sidebar-section" id="section-cellpose">
+            <div class="section-header">Cellpose</div>
+
+            <!-- WebGPU-unsupported notice (shown instead of the controls) -->
+            <div id="cp-unsupported" class="hint" style="display:none;">
+                Cellpose needs <strong>WebGPU</strong>, which this browser doesn't support.
+                Try a recent Chrome or Edge. The Threshold and Classifier tools work here.
+            </div>
+
+            <div id="cp-controls">
+                <div class="control-group">
+                    <div class="count-readout">
+                        <span class="count-readout-number" id="stat-count">0</span>
+                        <span class="count-readout-label">cells</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <span class="control-label">
+                        Channels
+                        <span class="info-tip" tabindex="0" role="note"
+                              title="One channel is completely fine — just press Run. Picking the wrong channel only changes the result, it never breaks anything, and you can re-run freely. For 2-channel images, Cytoplasm is the cell body and Nucleus is the nuclear stain (or None).">ⓘ</span>
+                    </span>
+                    <div class="cp-channel-row">
+                        <label>Cytoplasm</label>
+                        <select id="cpCyto"></select>
+                    </div>
+                    <div class="cp-channel-row">
+                        <label>Nucleus</label>
+                        <select id="cpNuc"></select>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <span class="control-label">Cell diameter (px)</span>
+                    <input type="number" id="cpDiameter" min="1" max="500" step="1" value="30" style="width:80px;">
+                </div>
+
+                <button id="btnRun" class="btn-primary" disabled>Run Cellpose</button>
+                <div id="cp-progress" class="save-status" style="display:none;"></div>
+            </div>
+        </div>
+
+        <div class="sidebar-section" id="section-export">
+            <div class="section-header">Export</div>
+            <div class="control-group">
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkExportSeg" checked>
+                    Segmentation mask
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkExportLabels" checked>
+                    Instance labels (each cell a unique ID)
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkExportCsv" checked>
+                    Object measurements (CSV)
+                </label>
+            </div>
+            <button id="btnExportAll" class="btn-primary" disabled>
+                Export Loaded Images
+            </button>
+            <p class="hint">Run Cellpose before exporting.</p>
+        </div>
+
+    </div>
+
+    <div id="viewport">
+        <div id="canvas-board"></div>
+    </div>
+
+</div>
+
+<script type="module">
+    import { zipImages } from './js/export.js';
+    import { createBaseState, initApp } from './js/app.js';
+    import { downloadBlob, dateStamp } from './js/chrome.js';
+    import { setDisplayChannel } from './js/images.js';
+    import { ensureCellposeLoaded, runCellpose, cellposeSupported } from './js/cellpose.js';
+
+    const state = createBaseState({
+        classMarkersVisible: [true, true, true, true],
+        // One image entry per file, keeping all channels together (see images.js).
+        splitChannels: false,
+        cellpose: { cytoChannel: 0, nucChannel: -1, diameter: 30 },
+        hasRun: false, // gates the export button until a segmentation exists
+        // Repopulate the channel selectors when the image set changes.
+        onImagesChanged: (s) => refreshChannelSelectors(s),
+    });
+
+    const supported = cellposeSupported();
+
+    function init() {
+        initApp(state, { page: 'cellpose' });
+        if (!supported) {
+            document.getElementById('cp-unsupported').style.display = '';
+            document.getElementById('cp-controls').style.display = 'none';
+        }
+        setupCellposeUI();
+    }
+
+    // Max channel count across loaded images; the selectors offer that many.
+    function maxChannels(s) {
+        return s.images.reduce((m, img) => Math.max(m, img.channels ? img.channels.length : 1), 0);
+    }
+
+    function refreshChannelSelectors(s) {
+        const n = maxChannels(s);
+        const cyto = document.getElementById('cpCyto');
+        const nuc  = document.getElementById('cpNuc');
+        if (!cyto || !nuc) return;
+
+        const chanOptions = Array.from({ length: n }, (_, i) => `<option value="${i}">Channel ${i}</option>`).join('');
+        cyto.innerHTML = chanOptions || '<option value="0">Channel 0</option>';
+        nuc.innerHTML = '<option value="-1">None</option>' + chanOptions;
+
+        // Default: cyto = ch0, nucleus = ch1 for multichannel else None. Preserve a
+        // still-valid prior selection.
+        if (state.cellpose.cytoChannel >= n) state.cellpose.cytoChannel = 0;
+        if (state.cellpose.nucChannel >= n) state.cellpose.nucChannel = -1;
+        if (n >= 2 && state.cellpose.nucChannel === -1 && !state._nucTouched) {
+            state.cellpose.nucChannel = 1;
+        }
+        cyto.value = String(state.cellpose.cytoChannel);
+        nuc.value = String(state.cellpose.nucChannel);
+
+        document.getElementById('btnRun').disabled = s.images.length === 0 || !supported;
+    }
+
+    function setupCellposeUI() {
+        const cyto = document.getElementById('cpCyto');
+        const nuc  = document.getElementById('cpNuc');
+        const diameter = document.getElementById('cpDiameter');
+        const btnRun = document.getElementById('btnRun');
+        const progress = document.getElementById('cp-progress');
+
+        cyto.onchange = async () => {
+            state.cellpose.cytoChannel = parseInt(cyto.value, 10);
+            // The displayed channel follows the cytoplasm selection.
+            for (const img of state.images) await setDisplayChannel(img, Math.min(state.cellpose.cytoChannel, (img.channels?.length ?? 1) - 1));
+        };
+        nuc.onchange = () => {
+            state.cellpose.nucChannel = parseInt(nuc.value, 10);
+            state._nucTouched = true;
+        };
+        diameter.onchange = () => {
+            const v = parseInt(diameter.value, 10);
+            state.cellpose.diameter = (v > 0) ? v : 30;
+        };
+
+        btnRun.onclick = async () => {
+            if (state.images.length === 0) return;
+            btnRun.disabled = true;
+            progress.style.display = '';
+            try {
+                progress.textContent = 'Loading model…';
+                await ensureCellposeLoaded((frac) => {
+                    progress.textContent = `Downloading model… ${Math.round(frac * 100)}%`;
+                });
+                await runCellpose(state, {
+                    onImageStart: (i, count, name) => {
+                        progress.textContent = `Segmenting ${i + 1}/${count}: ${name}…`;
+                    },
+                });
+                state.hasRun = true;
+                document.getElementById('btnExportAll').disabled = false;
+                progress.textContent = 'Done ✓';
+                setTimeout(() => { if (progress.textContent === 'Done ✓') progress.style.display = 'none'; }, 1500);
+            } catch (err) {
+                console.error(err);
+                progress.textContent = `Failed: ${err.message}`;
+                alert(`Cellpose failed: ${err.message}`);
+            } finally {
+                btnRun.disabled = state.images.length === 0 || !supported;
+            }
+        };
+
+        // Export
+        const btnExport = document.getElementById('btnExportAll');
+        btnExport.onclick = async () => {
+            const exportSeg    = document.getElementById('chkExportSeg').checked;
+            const exportLabels = document.getElementById('chkExportLabels').checked;
+            const exportCsv    = document.getElementById('chkExportCsv').checked;
+            if (!exportSeg && !exportLabels && !exportCsv) {
+                alert('Please select at least one export option.');
+                return;
+            }
+            btnExport.disabled = true;
+            btnExport.innerText = 'Exporting…';
+            try {
+                const zipBlob = await zipImages(
+                    state.images,
+                    { seg: exportSeg, labels: exportLabels, csv: exportCsv,
+                      instanceLabels: true, instanceClass: 'cell' },
+                    (metadata) => btnExport.innerText = metadata.percent.toFixed(2) + '%',
+                );
+                if (!zipBlob) throw Error('nothing to export');
+                downloadBlob(zipBlob, `cellpose_export_${dateStamp()}.zip`);
+                alert('All images exported successfully!');
+            } catch (err) {
+                console.error(err);
+                alert(`Export failed: ${err.message}`);
+            } finally {
+                btnExport.disabled = false;
+                btnExport.innerText = 'Export Loaded Images';
+            }
+        };
+    }
+
+    init();
+</script>
+</body>
+</html>
