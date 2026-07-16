@@ -14,12 +14,15 @@ import { decodeObjectStats } from './objects.js';
 import { setCentroids, renderCentroids } from './images.js';
 import { animateCount, setClassBadgesLoading } from './ui.js';
 
-const WEIGHTS_URL = new URL('./vendor/cellpose/cyto3_weights.bin', import.meta.url).href;
+// The weights are vendored gzip-compressed (~23.4MB) so the raw ~25.2MB blob stays
+// under static-host per-file limits (e.g. Cloudflare Pages' 25 MiB); we decompress
+// them client-side with the browser-native DecompressionStream while streaming.
+const WEIGHTS_URL = new URL('./vendor/cellpose/cyto3_weights.bin.gz', import.meta.url).href;
 const MANIFEST_URL = new URL('./vendor/cellpose/cyto3_manifest.json', import.meta.url).href;
 // Bump the version suffix if the vendored weights ever change, to invalidate the
 // old cached blob.
-const CACHE_NAME = 'quantosaurus-cellpose-v1';
-const WEIGHTS_BYTES = 26403372; // fallback for progress when content-length is absent
+const CACHE_NAME = 'quantosaurus-cellpose-v2';
+const WEIGHTS_GZ_BYTES = 24576400; // compressed size; progress fallback when content-length is absent
 const FOREGROUND_CLASS = 0;     // Cellpose fills the single foreground/overlay class
 
 let _cp = null;          // CellposeWebGPU (owns its device); null until loaded
@@ -58,34 +61,36 @@ export async function ensureCellposeLoaded(onProgress) {
     }
 }
 
-/** Fetch the weight blob, from the Cache API if present, streaming for progress. */
+/**
+ * Fetch the gzip-compressed weight blob (from the Cache API if present), reporting
+ * progress against the compressed download, and inflate it with the browser-native
+ * DecompressionStream. Returns the raw (decompressed) weight bytes.
+ */
 async function fetchWeightsCached(onProgress) {
     const cache = ('caches' in self) ? await caches.open(CACHE_NAME) : null;
     let resp = cache ? await cache.match(WEIGHTS_URL) : null;
-    const cached = !!resp;
     if (!resp) {
         resp = await fetch(WEIGHTS_URL);
         if (!resp.ok) throw new Error(`Failed to fetch Cellpose weights (${resp.status})`);
-        if (cache) await cache.put(WEIGHTS_URL, resp.clone());
+        if (cache) await cache.put(WEIGHTS_URL, resp.clone()); // cache the small compressed blob
     }
 
-    const total = Number(resp.headers.get('content-length')) || WEIGHTS_BYTES;
-    const reader = resp.body.getReader();
-    const chunks = [];
+    // content-length is the compressed size; track progress on bytes downloaded.
+    const total = Number(resp.headers.get('content-length')) || WEIGHTS_GZ_BYTES;
     let loaded = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        loaded += value.length;
-        onProgress?.(Math.min(1, loaded / total), loaded, total);
-    }
-    const out = new Uint8Array(loaded);
-    let off = 0;
-    for (const c of chunks) { out.set(c, off); off += c.length; }
+    const counter = new TransformStream({
+        transform(chunk, controller) {
+            loaded += chunk.length;
+            onProgress?.(Math.min(1, loaded / total), loaded, total);
+            controller.enqueue(chunk);
+        },
+    });
+    const inflated = resp.body
+        .pipeThrough(counter)
+        .pipeThrough(new DecompressionStream('gzip'));
+    const buf = await new Response(inflated).arrayBuffer();
     onProgress?.(1, loaded, total);
-    void cached;
-    return out.buffer;
+    return buf;
 }
 
 /**
