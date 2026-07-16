@@ -226,6 +226,12 @@ async function buildImageEntry(state, { id, name, sourceName, fileSize, intensit
         return false;
     }
     await backend.allocateImage(w, h, intensityArray, range);
+    // Paint the raw (contrast-windowed) image immediately so it's visible the moment
+    // it loads, independent of any method. The probability buffer is seeded with the
+    // -1.0 "no overlay" sentinel by allocateImage, so this renders the bare pixels.
+    // Threshold/Cellpose otherwise have no initial draw (their overlays come later on
+    // Run / re-threshold); the classifier repaints below once features are computed.
+    backend.renderComposite();
     // The 8-channel Gaussian-derivative feature bank is only consumed by the
     // random-forest classifier. Threshold and Cellpose never read it, so they
     // leave state.computeFeatures falsy and skip the GPU work + memory here.
