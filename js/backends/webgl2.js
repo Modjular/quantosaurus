@@ -6,7 +6,8 @@
  *   initialize, allocateImage, updateFeatures, downloadFeatures,
  *   gatherFeaturesForTraining, runInference, renderComposite,
  *   downloadProbabilities, computeConnectedComponents, computeStats,
- *   downloadStats, downloadLabels, setWindow, setColors, destroy.
+ *   downloadStats, downloadLabels, setProbabilities, setLabels,
+ *   setWindow, setColors, destroy.
  *
  * Pipeline: a separable Gaussian-derivative filter bank (two fragment passes,
  * horizontal then vertical) writes 8 per-pixel features across two RGBA float
@@ -394,6 +395,43 @@ export class WebGl2Backend {
       }
       this._colorData = packColors(this.labelColors);
       this.renderComposite();
+  }
+
+  /**
+   * Overwrites the probability map directly and repaints — for segmentation
+   * methods that produce probabilities on the CPU rather than via the on-GPU
+   * random forest (Threshold). `probs` is width*height*numColors, class-minor,
+   * matching downloadProbabilities; it is packed into probTexture's RGBA channels
+   * (this backend caps classes at 4 — see the module-level note). Unused channels
+   * are set to the -1.0 "no overlay" sentinel so the composite draws bare pixels.
+   * @param {Float32Array} probs - width*height*numColors probabilities.
+   */
+  setProbabilities(probs) {
+      const gl = this.gl;
+      const numColors = this.labelColors.length;
+      const n = this.width * this.height;
+      const rgba = new Float32Array(n * 4).fill(-1.0);
+      for (let i = 0; i < n; i++) {
+          for (let c = 0; c < numColors && c < 4; c++) {
+              rgba[i * 4 + c] = probs[i * numColors + c];
+          }
+      }
+      // texSubImage2D (not texImage2D) so probTexture's storage isn't reallocated
+      // out from under the FBO that renders inference into it.
+      gl.bindTexture(gl.TEXTURE_2D, this.probTexture);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, rgba);
+      this.renderComposite();
+  }
+
+  /**
+   * Uploads a precomputed label map, bypassing connected-component labeling, so
+   * computeStats/downloadLabels operate on it directly (see WebGpuBackend.setLabels
+   * for the full rationale). Provided for interface parity; Cellpose — the only
+   * caller — runs on WebGPU, so in practice this backend never sees it.
+   * @param {Int32Array|Uint32Array} labels - width*height label ids.
+   */
+  setLabels(labels) {
+      this.labels = labels instanceof Uint32Array ? labels.slice() : new Uint32Array(labels);
   }
 
   /**
