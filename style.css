@@ -1055,3 +1055,204 @@ hr.divider {
 
     .cs-header-actions { display: none; } /* Hides both Print and Close buttons on paper */
 }
+/* ── Multi-app navigation + shared readout (classifier / threshold / cellpose) ── */
+
+/* Logo doubles as the "home" link to the landing page. */
+.brand-link { text-decoration: none; display: inline-flex; align-items: center; }
+.brand-link:hover h2 { color: var(--text-main); }
+
+/* Top-bar nav linking the three tools; the active one is highlighted. */
+#app-nav {
+    display: flex;
+    gap: 4px;
+}
+#app-nav a {
+    padding: 4px 10px;
+    font-size: 13px;
+    border-radius: 6px;
+    text-decoration: none;
+    color: var(--text-muted);
+}
+#app-nav a:hover { background: var(--accent-subtle); color: var(--text-main); }
+#app-nav a.active {
+    background: var(--accent-primary);
+    color: #fff;
+}
+
+/* Single headline count readout used by the Threshold and Cellpose apps, in place
+   of the classifier's per-class badges. */
+.count-readout {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+}
+.count-readout-number {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
+}
+.count-readout-label {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+.count-readout-number.loading { opacity: 0.4; }
+
+/* ── Cellpose channel selectors + info tooltip ── */
+.cp-channel-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+}
+.cp-channel-row label { font-size: 13px; color: var(--text-muted); }
+.cp-channel-row select {
+    flex: 1;
+    max-width: 130px;
+    font-size: 12px;
+    padding: 3px 6px;
+    background: var(--bg-surface-elevated);
+    color: var(--text-main);
+    border: 1px solid var(--border-control);
+    border-radius: 5px;
+}
+/* Small "ⓘ" affordance whose native title tooltip carries the biologist-facing
+   explainer; kept subtle so it doesn't compete with the controls. */
+.info-tip {
+    display: inline-block;
+    margin-left: 4px;
+    color: var(--text-muted);
+    cursor: help;
+    font-size: 12px;
+}
+.info-tip:hover, .info-tip:focus { color: var(--accent-primary); outline: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Landing page (index.html) — the tool chooser / SEO surface. Self-contained
+   layout, independent of the app's sidebar/viewport, sharing the theme vars.
+   ══════════════════════════════════════════════════════════════════════════ */
+.landing {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 32px 24px 48px;
+    box-sizing: border-box;
+}
+.landing-hero { text-align: center; margin: 12px 0 8px; }
+.landing-hero h1 {
+    font-size: 34px;
+    margin: 0 0 10px;
+    color: var(--text-main);
+    line-height: 1.15;
+}
+.landing-hero p {
+    font-size: 16px;
+    color: var(--text-muted);
+    max-width: 640px;
+    margin: 0 auto;
+    line-height: 1.5;
+}
+.landing-privacy {
+    display: inline-block;
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 5px 14px;
+}
+
+/* Three tool cards */
+.tool-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 28px 0;
+}
+@media (max-width: 780px) { .tool-cards { grid-template-columns: 1fr; } }
+.tool-card {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 20px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, transform 0.15s;
+}
+.tool-card:hover { border-color: var(--accent-primary); transform: translateY(-2px); }
+.tool-card-icon { font-size: 28px; }
+.tool-card-tier {
+    align-self: flex-start;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin: 10px 0 6px;
+}
+.tier-easy     { background: rgba(138,201,38,0.18); color: #8ac926; }
+.tier-medium   { background: rgba(25,130,196,0.18); color: #1982c4; }
+.tier-advanced { background: rgba(255,89,94,0.18);  color: #ff595e; }
+.tool-card h2 { font-size: 19px; margin: 0 0 6px; color: var(--text-main); }
+.tool-card p { font-size: 14px; color: var(--text-muted); line-height: 1.5; margin: 0 0 14px; flex: 1; }
+.tool-card-cta {
+    align-self: flex-start;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent-primary);
+    padding: 7px 14px;
+    border-radius: 7px;
+}
+.tool-card:hover .tool-card-cta { background: var(--accent-primary-hover); }
+
+/* Comparison table */
+.landing table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    margin: 8px 0 28px;
+}
+.landing table th, .landing table td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.landing table th { color: var(--text-muted); font-weight: 600; }
+.landing table td { color: var(--text-main); }
+.landing table td:first-child { font-weight: 600; }
+
+.landing h3.section-title {
+    font-size: 20px;
+    color: var(--text-main);
+    margin: 28px 0 10px;
+}
+.landing-faq details {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 10px 0;
+}
+.landing-faq summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-main);
+    font-size: 15px;
+}
+.landing-faq p { color: var(--text-muted); font-size: 14px; line-height: 1.5; margin: 8px 0 0; }
+.landing-footer {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-top: 32px;
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+}
+.landing-footer a { color: var(--text-muted); }

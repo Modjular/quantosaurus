@@ -1,6 +1,36 @@
 import { writeImage, setPipelinesBaseUrl } from './vendor/itk-wasm-image-io.min.js';
-import { STATS_LAYOUT } from './config.js';
+import { NUM_CLASSES } from './config.js';
 import { buildIlpProject, stripExtension } from './ilp.js';
+import { decodeObjectStats, buildObjectCsv } from './objects.js';
+
+// Instance labels are written as uint16 (one distinct ID per object), so at most
+// this many objects per image can be exported as a label image. itk-wasm's uint32
+// path is broken (issue #1544), and uint16 is plenty for cell counts.
+const MAX_UINT16_LABEL = 65535;
+
+/**
+ * Serializes one 2D ITK image to a `.tif` and appends it to `filesToZip`.
+ * Factors out the boilerplate shared by the segmentation / probability / label
+ * exports (they differ only in name, pixel type, component count, and data).
+ * @param {Array<{name:string,data:ArrayBuffer}>} filesToZip - Accumulator, mutated.
+ * @param {Object} spec - {name, w, h, pixelType, componentType, components, data}.
+ */
+async function addItkImage(filesToZip, { name, w, h, pixelType, componentType, components, data }) {
+    const itkImage = {
+        imageType: { dimension: 2, pixelType, componentType, components },
+        name,
+        origin: [0.0, 0.0],
+        spacing: [1.0, 1.0],
+        direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
+        size: [w, h],
+        metadata: new Map(),
+        data,
+    };
+    const filename = `${name}.tif`;
+    // webWorker: false — see io.js for why (opaque-origin worker needs CORS).
+    const { serializedImage } = await writeImage(itkImage, filename, { webWorker: false });
+    filesToZip.push({ name: filename, data: serializedImage.data.buffer });
+}
 
 // itk-wasm fetches its WASM pipelines relative to this URL at runtime; point it at the
 // vendored copy instead of the jsDelivr CDN default.
@@ -8,168 +38,139 @@ setPipelinesBaseUrl(new URL('./vendor/itk-wasm-image-io-pipelines', import.meta.
 
 
 /**
- * Handles generating ITK images and batching files into ZIPs.
- * @param {Array<Object>} images - Array of image objects to export.
- * @param {boolean} exportSeg - Whether to export segmentation masks.
- * @param {boolean} exportProb - Whether to export probability maps.
- * @param {Function} progressCallback - Optional callback for UI progress updates.
- * @returns {Promise<Blob>} A promise that resolves to the generated ZIP Blob.
+ * Generates ITK images / a CSV from each image's GPU results and batches them
+ * into a ZIP. The outputs are opt-in via `opts`, so each app requests only what
+ * its method actually produces:
+ *   - seg    uint8 segmentation mask (argmax of the probability buffer; 0 = bg,
+ *            else class+1). Every app.
+ *   - prob   float32 per-class probability map. Classifier only (meaningless for
+ *            Threshold, whose "probabilities" are just ±1 constants).
+ *   - labels uint16 instance-label image (one ID per object). Requires
+ *            `instanceLabels` — the label buffer must already hold compact 1..N
+ *            instances (Cellpose), since CCL roots aren't 1..N. Skipped, with a
+ *            warning, for any image with more than 65535 objects.
+ *   - csv    one combined per-object CSV across all images (image, class, label,
+ *            centroid, area, intensity min/mean/max). Every app.
+ *
+ * @param {Array<Object>} images - Images to export.
+ * @param {Object} opts
+ * @param {boolean} [opts.seg]
+ * @param {boolean} [opts.prob]
+ * @param {boolean} [opts.labels]
+ * @param {boolean} [opts.csv]
+ * @param {boolean} [opts.instanceLabels] - Label buffer already holds 1..N
+ *   instances (Cellpose): enumerate objects from it directly instead of running
+ *   connected-components per class. Required for `labels`.
+ * @param {string[]} [opts.classNames] - Per-class names for the CSV class column
+ *   (classifier). Defaults to "Class N".
+ * @param {string} [opts.instanceClass] - Class label for instance-mode CSV rows
+ *   (default "cell").
+ * @param {Function} [progressCallback] - Zip progress callback.
+ * @returns {Promise<Blob|undefined>} The ZIP blob, or undefined if nothing was produced.
  */
-export async function zipImages(images, exportSeg, exportProb, progressCallback) {
-    // Array to temporarily hold file data if we are zipping
+export async function zipImages(images, opts = {}, progressCallback) {
+    const {
+        seg = false, prob = false, labels = false, csv = false,
+        instanceLabels = false, classNames = [], instanceClass = 'cell',
+    } = opts;
     const filesToZip = [];
+    const csvRows = [];
     const callback = progressCallback || ((m) => console.log(m));
 
     for (let i = 0; i < images.length; i++) {
         const img = images[i];
-        const probs = await img.backend.downloadProbabilities();
         const w = img.width;
         const h = img.height;
         const baseName = img.name ? stripExtension(img.name) : `image_${i}`;
-        const numClasses = (probs.length / (w * h));
 
-        if (exportSeg) {
-            const dataUint8Array = new Uint8Array(w * h);
-            for (let j = 0; j < w * h; j++) {
-                let max_p = -1.0;
-                let best_class = -1;
-                for (let c = 0; c < numClasses; c++) {
-                    const p = probs[j * numClasses + c];
-                    if (p > max_p) {
-                        max_p = p;
-                        best_class = c;
+        if (seg || prob) {
+            const probs = await img.backend.downloadProbabilities();
+            const numClasses = (probs.length / (w * h));
+
+            if (seg) {
+                const dataUint8Array = new Uint8Array(w * h);
+                for (let j = 0; j < w * h; j++) {
+                    let max_p = -1.0;
+                    let best_class = -1;
+                    for (let c = 0; c < numClasses; c++) {
+                        const p = probs[j * numClasses + c];
+                        if (p > max_p) {
+                            max_p = p;
+                            best_class = c;
+                        }
+                    }
+                    dataUint8Array[j] = max_p < 0 ? 0 : best_class + 1;
+                }
+                await addItkImage(filesToZip, {
+                    name: `${baseName}_segmentation`, w, h,
+                    pixelType: 'Scalar', componentType: 'uint8', components: 1,
+                    data: dataUint8Array,
+                });
+            }
+
+            if (prob) {
+                await addItkImage(filesToZip, {
+                    name: `${baseName}_probabilities`, w, h,
+                    pixelType: 'Vector', componentType: 'float32', components: numClasses,
+                    data: new Float32Array(probs),
+                });
+            }
+        }
+
+        if (labels || csv) {
+            const scale = img.range?.scale ?? 1;
+
+            if (instanceLabels) {
+                // Cellpose: the label buffer already holds compact 1..N instances.
+                // computeStats reads it directly (no CCL, which would renumber to
+                // union-find roots and destroy the instance ids).
+                const statsResult = await img.backend.computeStats();
+                if (statsResult !== null) {
+                    if (csv) {
+                        const stats = await img.backend.downloadStats();
+                        for (const o of decodeObjectStats(stats, scale)) {
+                            csvRows.push({ image: img.name ?? baseName, class: instanceClass, ...o });
+                        }
+                    }
+                    if (labels) {
+                        const raw = await img.backend.downloadLabels(); // Uint32Array, 1..N
+                        let maxLabel = 0;
+                        for (let k = 0; k < raw.length; k++) if (raw[k] > maxLabel) maxLabel = raw[k];
+                        if (maxLabel > MAX_UINT16_LABEL) {
+                            console.warn(`Skipping label image for "${img.name}": ${maxLabel} objects ` +
+                                `exceeds the uint16 limit (${MAX_UINT16_LABEL}).`);
+                        } else {
+                            const u16 = new Uint16Array(raw.length);
+                            for (let k = 0; k < raw.length; k++) u16[k] = raw[k];
+                            await addItkImage(filesToZip, {
+                                name: `${baseName}_labels`, w, h,
+                                pixelType: 'Scalar', componentType: 'uint16', components: 1,
+                                data: u16,
+                            });
+                        }
                     }
                 }
-                dataUint8Array[j] = max_p < 0 ? 0 : best_class + 1;
+            } else if (csv) {
+                // Classifier / Threshold: no pre-existing instance map, so enumerate
+                // objects per class via connected-components (labels export isn't
+                // offered here — CCL roots aren't the compact 1..N a label image needs).
+                for (let cls = 0; cls < NUM_CLASSES; cls++) {
+                    await img.backend.computeConnectedComponents(cls);
+                    const statsResult = await img.backend.computeStats();
+                    if (statsResult === null) continue;
+                    const stats = await img.backend.downloadStats();
+                    const className = classNames[cls] ?? `Class ${cls + 1}`;
+                    for (const o of decodeObjectStats(stats, scale)) {
+                        csvRows.push({ image: img.name ?? baseName, class: className, ...o });
+                    }
+                }
             }
-
-            const itkImage = {
-                imageType: {
-                    dimension: 2,
-                    pixelType: 'Scalar',
-                    componentType: 'uint8',
-                    components: 1
-                },
-                name: `${baseName}_segmentation`,
-                origin: [0.0, 0.0],
-                spacing: [1.0, 1.0],
-                direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
-                size: [w, h],
-                metadata: new Map(),
-                data: dataUint8Array
-            };
-
-            const filename = `${itkImage.name}.tif`;
-            // webWorker: false — see io.js for why (opaque-origin worker needs CORS).
-            const { serializedImage } = await writeImage(itkImage, filename, { webWorker: false });
-
-            filesToZip.push({ name: filename, data: serializedImage.data.buffer });
         }
+    }
 
-        if (exportProb) {
-            const dataFloat32Array = new Float32Array(probs);
-
-            const itkImage = {
-                imageType: {
-                    dimension: 2,
-                    pixelType: 'Vector',
-                    componentType: 'float32',
-                    components: numClasses
-                },
-                name: `${baseName}_probabilities`,
-                origin: [0.0, 0.0],
-                spacing: [1.0, 1.0],
-                direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
-                size: [w, h],
-                metadata: new Map(),
-                data: dataFloat32Array
-            };
-
-            const filename = `${itkImage.name}.tif`;
-            // webWorker: false — see io.js for why (opaque-origin worker needs CORS).
-            const { serializedImage } = await writeImage(itkImage, filename, { webWorker: false });
-
-            filesToZip.push({ name: filename, data: serializedImage.data.buffer });
-        }
-
-        const exportLabels = false; // TODO: re-enable once itk-wasm label export bug is fixed
-        if (exportLabels) {
-            // Before export, make sure labels are fully connected, then run stats
-
-            performance.mark('exportLabels')
-            await img.backend.computeConnectedComponents(1);
-            await img.backend.computeStats()
-
-            const labels = await img.backend.downloadLabels()
-            const data = await img.backend.downloadStats()
-
-            /**
-             * Dense stats struct (see STATS_LAYOUT). The summed fields are 64-bit,
-             * split into two u32 words; reassemble as hi*2^32 + lo:
-             *   [label, area, total_lo, total_hi, sumx_lo, sumx_hi,
-             *    sumy_lo, sumy_hi, min_intensity, max_intensity]
-             */
-            const statsStructCount = STATS_LAYOUT.denseCount;
-            const numLabels = data.length / statsStructCount
-            console.log("unique vs numLabels", new Set(labels).size, numLabels)
-
-            // Intensities are stored as fixed-point integers (raw * scale). Divide by
-            // scale to recover real units (0–65535 for uint16, scale 1).
-            const scale = img.range?.scale ?? 1;
-            const u64 = (lo, hi) => hi * 2 ** 32 + lo;
-
-            for (let i = 0; i < numLabels * statsStructCount; i += statsStructCount) {
-                const label = data[i + 0]
-                const area = data[i + 1];
-
-                if (area === 0) continue; // Label not present
-
-                const totalIntensity = u64(data[i + 2], data[i + 3]);
-                const sumX = u64(data[i + 4], data[i + 5]);
-                const sumY = u64(data[i + 6], data[i + 7]);
-                const minIntensityRaw = data[i + 8];
-                const maxIntensityRaw = data[i + 9];
-
-                // Compute the averages
-                const centroidX = sumX / area;
-                const centroidY = sumY / area;
-                const avgIntensityRaw = totalIntensity / area;
-
-                // Descale fixed-point intensities back to real units.
-                const minIntensity = minIntensityRaw / scale;
-                const maxIntensity = maxIntensityRaw / scale;
-                const avgIntensity = avgIntensityRaw / scale;
-
-                console.log(`Label ${label}: Centroid(${centroidX.toFixed(2)}, ${centroidY.toFixed(2)}), Intensity[Min: ${minIntensity}, Max: ${maxIntensity}, Avg: ${avgIntensity.toFixed(2)}]`);
-            }
-
-            // TODO: Waiting on bugfix from itk-wasm
-            // TODO: https://github.com/InsightSoftwareConsortium/ITK-Wasm/issues/1544
-
-            // const labels = await img.backend.downloadLabels()
-
-            // const itkImage = {
-            //     imageType: {
-            //         dimension: 2,
-            //         pixelType: 'Scalar',
-            //         componentType: 'uint32',
-            //         components: 1
-            //     },
-            //     name: `${baseName}_labels`,
-            //     origin: [0.0, 0.0],
-            //     spacing: [1.0, 1.0],
-            //     direction: new Float64Array([1.0, 0.0, 0.0, 1.0]),
-            //     // size: [w, h],
-            //     size: [100, 100],
-            //     metadata: new Map(),
-            //     data: new Uint32Array(100 * 100),
-            // };
-
-            // const filename = `${itkImage.name}.tif`;
-            // const { serializedImage } = await writeImage(itkImage, filename);
-
-            // filesToZip.push({ name: filename, data: serializedImage.data.buffer });
-        }
+    if (csv && csvRows.length > 0) {
+        const bytes = new TextEncoder().encode(buildObjectCsv(csvRows));
+        filesToZip.push({ name: 'objects.csv', data: bytes.buffer });
     }
 
     if (filesToZip.length > 0) {

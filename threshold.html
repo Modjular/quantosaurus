@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Threshold — Quantosaurus</title>
+    <meta name="description" content="Free, in-browser Otsu thresholding for counting cells in microscopy images. Automatic threshold with a manual override — no training, no setup, fully client-side.">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%22100%22>🦖</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="mode-grab">
+
+<div id="top-bar">
+    <a href="index.html" class="brand-link"><h2>🦖 Quantosaurus</h2></a>
+    <nav id="app-nav">
+        <a href="classifier.html" data-page="classifier">Classifier</a>
+        <a href="threshold.html" data-page="threshold">Threshold</a>
+        <a href="cellpose.html" data-page="cellpose">Cellpose</a>
+    </nav>
+    <div id="status">No images loaded. Drag &amp; drop onto the canvas.</div>
+    <div style="flex: 1;"></div>
+    <button id="btnCheatsheet" class="btn-subtle">❓&nbsp;&nbsp;Help</button>
+    <button id="btnThemeToggle" class="btn-subtle">☀️&nbsp;&nbsp;Light Mode</button>
+    <button id="btnFeedback" class="btn-subtle">💬&nbsp;&nbsp;Feedback</button>
+</div>
+
+<div id="feedbackModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content heavy-panel">
+        <div class="heavy-panel-header">
+            <span class="heavy-panel-title">Send Feedback</span>
+            <button id="btnCloseFeedback" class="img-delete" style="background:none; padding:2px 6px;">✕</button>
+        </div>
+        <p class="heavy-panel-desc" style="margin-bottom: 10px;">Help improve Quantosaurus! Let us know what's on your mind.</p>
+        <textarea id="feedbackText" placeholder="Love the tool, but export is slow..." rows="3" style="resize:none;"></textarea>
+        <input type="text" id="feedbackEmail" placeholder="Email address (optional)">
+        <label style="display:flex; align-items:center; gap:8px; font-size: 11px; color: var(--text-muted); margin-bottom: 12px; cursor: pointer;">
+            <input type="checkbox" id="chkDebug" checked>
+            Include technical debug info (browser, screen size, WebGPU support)
+        </label>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button id="btnSubmitFeedback" class="btn-primary" style="padding: 6px 12px;">Submit</button>
+        </div>
+    </div>
+</div>
+
+<div id="cheatsheetModal" class="modal-overlay" style="display: none;">
+    <div class="cheatsheet-paper">
+        <div class="cs-header">
+            <div>
+                <h1 style="margin: 0; font-size: 24px;">Thresholding 🎚️</h1>
+                <p style="margin: 4px 0 0 0; color: var(--text-muted); font-size: 14px;">
+                    The simplest way to count — a single brightness cutoff.
+                </p>
+            </div>
+            <div class="cs-header-actions">
+                <button id="btnPrintCheatsheet" class="btn-subtle" style="padding: 4px 10px; font-size: 12px;">🖨️&nbsp;&nbsp;Print</button>
+                <button id="btnCloseCheatsheet" class="btn-close-cs" title="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="cs-section">
+            <h3>How it works</h3>
+            <p>Every pixel brighter than the threshold is counted as part of an object; everything darker is background. Touching objects that share bright pixels are counted as one — for crowded or overlapping cells, try the <a href="cellpose.html">Cellpose</a> or <a href="classifier.html">Classifier</a> tools instead.</p>
+        </div>
+
+        <div class="cs-section cs-instructions">
+            <h3>Instructions</h3>
+            <div class="cs-steps">
+                <div class="cs-step">
+                    <div class="cs-step-number">1</div>
+                    <div class="cs-step-text"><strong>Load images</strong><br>Drag microscopy images (.tif, .png, .jpg) onto the canvas. Each is auto-thresholded on load.</div>
+                </div>
+                <div class="cs-step">
+                    <div class="cs-step-number">2</div>
+                    <div class="cs-step-text"><strong>Adjust</strong><br>Leave it on <em>Auto</em> (Otsu picks the cutoff per image), or drag the slider for a manual cutoff applied to every image.</div>
+                </div>
+                <div class="cs-step">
+                    <div class="cs-step-number">3</div>
+                    <div class="cs-step-text"><strong>Read the count</strong><br>The object count updates live. Tick <em>Invert</em> if your objects are darker than the background (e.g. brightfield).</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="main-container">
+
+    <div id="sidebar">
+
+        <div class="sidebar-section" id="section-ingest">
+            <div class="section-header">Images</div>
+            <input type="file" id="fileInput" accept=".tif,.tiff,.png,.jpg,.jpeg" multiple style="font-size:12px;">
+            <div id="img-empty">
+                Drop images onto the canvas<br>or use the file picker above.
+            </div>
+            <div id="image-list"></div>
+        </div>
+
+        <div class="sidebar-section" id="section-threshold">
+            <div class="section-header">Threshold</div>
+
+            <div class="control-group">
+                <div class="count-readout">
+                    <span class="count-readout-number" id="stat-count">0</span>
+                    <span class="count-readout-label">objects</span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkAuto" checked>
+                    Auto (Otsu) — pick the cutoff per image
+                </label>
+            </div>
+
+            <div class="control-group">
+                <span class="control-label">Manual threshold</span>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <input type="range" id="threshRange" min="0" max="1" step="0.005" value="0.5">
+                    <span id="threshVal" style="min-width:36px; font-size:12px;">Auto</span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkInvert">
+                    Invert — objects are darker than background
+                </label>
+            </div>
+        </div>
+
+        <div class="sidebar-section" id="section-export">
+            <div class="section-header">Export</div>
+            <div class="control-group">
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkExportSeg" checked>
+                    Segmentation mask
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size: 13px;">
+                    <input type="checkbox" id="chkExportCsv" checked>
+                    Object measurements (CSV)
+                </label>
+            </div>
+            <button id="btnExportAll" class="btn-primary" disabled>
+                Export Loaded Images
+            </button>
+        </div>
+
+    </div>
+
+    <div id="viewport">
+        <div id="canvas-board"></div>
+    </div>
+
+</div>
+
+<script type="module">
+    import { zipImages } from './js/export.js';
+    import { createBaseState, initApp } from './js/app.js';
+    import { downloadBlob, dateStamp } from './js/chrome.js';
+    import { runThreshold } from './js/threshold.js';
+
+    // Threshold app state: the shared base plus a global threshold model. The
+    // method is global but each image maps the normalized slider value through its
+    // own data range (see threshold.js). classMarkersVisible is needed by the
+    // centroid overlay (images.js:renderCentroids), which this app reuses.
+    const state = createBaseState({
+        classMarkersVisible: [true, true, true, true],
+        threshold: { auto: true, value: 0.5, invert: false },
+        // Re-threshold + recount whenever the image set changes (add/delete).
+        onImagesChanged: (s) => runThreshold(s),
+    });
+
+    let _rethreshTimer = null;
+    // Debounce the GPU work (threshold + connected components + stats) so dragging
+    // the slider stays smooth; ~120ms is imperceptible but coalesces a drag burst.
+    function scheduleRethreshold() {
+        clearTimeout(_rethreshTimer);
+        _rethreshTimer = setTimeout(() => runThreshold(state), 120);
+    }
+
+    function init() {
+        initApp(state, { page: 'threshold' });
+        setupThresholdUI();
+    }
+
+    function setupThresholdUI() {
+        const chkAuto   = document.getElementById('chkAuto');
+        const range     = document.getElementById('threshRange');
+        const threshVal = document.getElementById('threshVal');
+        const chkInvert = document.getElementById('chkInvert');
+
+        // The slider stays enabled even in Auto mode: grabbing it is how the user
+        // switches to Manual (see range.oninput). The label reads "Auto" until then.
+        function syncManualLabel() {
+            threshVal.innerText = state.threshold.auto ? 'Auto' : Number(range.value).toFixed(2);
+        }
+
+        chkAuto.onchange = () => {
+            state.threshold.auto = chkAuto.checked;
+            syncManualLabel();
+            scheduleRethreshold();
+        };
+
+        range.oninput = () => {
+            // Dragging the slider switches to manual and applies one normalized
+            // value to every image (mapped per-image through its own range).
+            if (state.threshold.auto) { state.threshold.auto = false; chkAuto.checked = false; }
+            state.threshold.value = parseFloat(range.value);
+            syncManualLabel();
+            scheduleRethreshold();
+        };
+
+        chkInvert.onchange = () => {
+            state.threshold.invert = chkInvert.checked;
+            scheduleRethreshold();
+        };
+
+        syncManualLabel(); // reflect the initial Auto state
+
+        // Export
+        const btnExport = document.getElementById('btnExportAll');
+        btnExport.onclick = async () => {
+            const exportSeg = document.getElementById('chkExportSeg').checked;
+            const exportCsv = document.getElementById('chkExportCsv').checked;
+            if (!exportSeg && !exportCsv) {
+                alert('Please select at least one export option.');
+                return;
+            }
+            btnExport.disabled = true;
+            btnExport.innerText = 'Exporting…';
+            try {
+                const zipBlob = await zipImages(
+                    state.images,
+                    // classNames[0] labels the foreground class in the CSV; other
+                    // classes never have objects under thresholding.
+                    { seg: exportSeg, csv: exportCsv, classNames: ['object'] },
+                    (metadata) => btnExport.innerText = metadata.percent.toFixed(2) + '%',
+                );
+                if (!zipBlob) throw Error('nothing to export');
+                downloadBlob(zipBlob, `threshold_export_${dateStamp()}.zip`);
+                alert('All images exported successfully!');
+            } catch (err) {
+                console.error(err);
+                alert(`Export failed: ${err.message}`);
+            } finally {
+                btnExport.disabled = false;
+                btnExport.innerText = 'Export Loaded Images';
+            }
+        };
+    }
+
+    init();
+</script>
+</body>
+</html>

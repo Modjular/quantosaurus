@@ -6,7 +6,8 @@
  *   initialize, allocateImage, updateFeatures, downloadFeatures,
  *   gatherFeaturesForTraining, runInference, renderComposite,
  *   downloadProbabilities, computeConnectedComponents, computeStats,
- *   downloadStats, downloadLabels, setWindow, setColors, destroy.
+ *   downloadStats, downloadLabels, setProbabilities, setLabels,
+ *   setWindow, setColors, destroy.
  *
  * Everything runs on-GPU via compute shaders: a separable Gaussian-derivative
  * filter bank produces 8 per-pixel features; a Random Forest pass turns them
@@ -193,11 +194,13 @@ export class WebGpuBackend {
         const initialProbs = new Float32Array(width * height * numColors).fill(-1.0);
         this.device.queue.writeBuffer(this.probBuffer, 0, initialProbs);
 
-        // Allocate/Reset Component Label Buffers (u32 per pixel)
+        // Allocate/Reset Component Label Buffers (u32 per pixel). COPY_DST so a
+        // precomputed instance-label map can be uploaded via setLabels (Cellpose),
+        // not only produced on-GPU by connected-component labeling.
         if (this.labelBuffer) this.labelBuffer.destroy();
         this.labelBuffer = this.device.createBuffer({
             size: width * height * 4,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
         });
 
         if (this.featureBuffer) { this.featureBuffer.destroy(); this.featureBuffer = null; }
@@ -922,6 +925,35 @@ export class WebGpuBackend {
         }
         this._writeColorBuffer();
         this.renderComposite();
+    }
+
+    /**
+     * Overwrites the probability buffer directly and repaints — the entry point
+     * for segmentation methods that produce probabilities on the CPU rather than
+     * via the on-GPU random forest (Threshold; Cellpose's overlay). Same layout as
+     * the RF/inference pass and downloadProbabilities: width*height*numColors
+     * floats, class-minor (channel c of pixel p at index p*numColors + c). Use the
+     * -1.0 "no overlay" sentinel for background so the composite draws the bare
+     * pixel there (see allocateImage / the composite shader).
+     * @param {Float32Array} probs - width*height*numColors probabilities.
+     */
+    setProbabilities(probs) {
+        this.device.queue.writeBuffer(this.probBuffer, 0, probs);
+        this.renderComposite();
+    }
+
+    /**
+     * Uploads a precomputed label map straight into the label buffer, bypassing
+     * connected-component labeling — for methods that already produce instance
+     * labels (Cellpose: 0 = background, 1..N = objects). computeStats then reads
+     * these directly, preserving each object's distinct id (CCL would renumber
+     * them to union-find roots). Values must be 0..N compact for a later uint16
+     * label export.
+     * @param {Int32Array|Uint32Array} labels - width*height label ids.
+     */
+    setLabels(labels) {
+        const u32 = labels instanceof Uint32Array ? labels : new Uint32Array(labels);
+        this.device.queue.writeBuffer(this.labelBuffer, 0, u32);
     }
 
     /**
