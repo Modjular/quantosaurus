@@ -22,12 +22,11 @@
     }
     </script>
 </head>
-<body class="mode-grab">
+<body style="overflow: auto">
 
 <div id="top-bar">
-    <a href="index.html" class="brand-link"><h2>🦖 Quantosaurus</h2></a>
+    <h2><a href="index.html" class="brand-link">🦖 Quantosaurus</a></h2>
     <div style="flex: 1;"></div>
-    <a href="https://github.com/Modjular/quantosaurus" target="_blank" class="btn-subtle" style="text-decoration:none;">GitHub</a>
     <button id="btnThemeToggle" class="btn-subtle">☀️&nbsp;&nbsp;Light Mode</button>
     <button id="btnFeedback" class="btn-subtle">💬&nbsp;&nbsp;Feedback</button>
 </div>
@@ -58,8 +57,7 @@
         <p>
             Quantosaurus is an open-source tool for <strong>counting cells</strong> and analyzing
             microscopy images. Everything runs on your own machine using your GPU — from a simple
-            brightness threshold to the <strong>Cellpose</strong> deep-learning model. Pick the tool
-            that fits your image and get a count in seconds.
+            brightness threshold to the <strong>Cellpose</strong> deep-learning model.
         </p>
         <span class="landing-privacy">🔒 Your images never leave your computer — all processing is client-side.</span>
     </section>
@@ -126,11 +124,12 @@
     </div>
 
     <div class="landing-footer">
-        <a href="https://github.com/Modjular/quantosaurus" target="_blank">GitHub</a>
-        <a href="https://forum.image.sc/" target="_blank">Image.sc Forum</a>
-        <span>Built with 🦖 for biologists.</span>
+        <div>Built with 🦖 for Dr. Chen.</div>
+        <div style="display: flex; gap: 15px;">
+            <a href="https://github.com/Modjular/quantosaurus" target="_blank">GitHub</a>
+            <a href="https://forum.image.sc/" target="_blank">Image.sc Forum</a>
+        </div>
     </div>
-
 </main>
 
 <script type="module">

@@ -1058,8 +1058,16 @@ hr.divider {
 /* ── Multi-app navigation + shared readout (classifier / threshold / cellpose) ── */
 
 /* Logo doubles as the "home" link to the landing page. */
-.brand-link { text-decoration: none; display: inline-flex; align-items: center; }
-.brand-link:hover h2 { color: var(--text-main); }
+.brand-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+}
+.brand-link:hover{
+    color: var(--text-main);
+    text-decoration: none;
+}
 
 /* Top-bar nav linking the three tools; the active one is highlighted. */
 #app-nav {
@@ -1162,7 +1170,7 @@ hr.divider {
     font-size: 13px;
     color: var(--text-muted);
     background: var(--bg-surface);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--accent-success);
     border-radius: 999px;
     padding: 5px 14px;
 }
@@ -1252,7 +1260,5 @@ hr.divider {
     font-size: 13px;
     margin-top: 32px;
     display: flex;
-    gap: 16px;
-    justify-content: center;
+    justify-content: space-between;
 }
-.landing-footer a { color: var(--text-muted); }
