@@ -1,10 +1,9 @@
-import { RF_CONFIG, CENTROID_OVERLAY } from './config.js';
+import { CENTROID_OVERLAY } from './config.js';
 import { WebGpuBackend } from './backends/webgpu.js';
 import { WebGl2Backend } from './backends/webgl2.js';
 import { loadFileIntoArray } from './io.js';
 import { createImageRow, syncUI, updateSaveIndicator } from './ui.js';
 import { openContrastPopover } from './contrast.js';
-import { scheduleTraining } from './training.js';
 
 
 /**
@@ -122,6 +121,25 @@ export async function addImage(state, file) {
     const { channels, w, h } = loaded;
     const multichannel = channels.length > 1;
 
+    // Cellpose keeps a file's channels together in one image (it segments a
+    // cyto+nucleus pair), so it sets state.splitChannels = false. The classifier
+    // and threshold apps leave it unset (defaulting to true) and split a
+    // multichannel file into one independent single-channel image per channel.
+    const split = state.splitChannels !== false;
+
+    if (!split) {
+        // One entry per file, holding every channel. The displayed channel starts
+        // at 0; the caller (Cellpose) picks which channels are cyto/nucleus.
+        await buildImageEntry(state, {
+            id: placeholderId, name: file.name, sourceName: file.name, fileSize: file.size,
+            intensityArray: channels[0].intensityArray, w, h, range: channels[0].range,
+            row: placeholderRow, channels,
+        });
+        syncUI(state);
+        state.onImagesChanged?.(state);
+        return;
+    }
+
     // Single channel reuses the loading placeholder row; multichannel gives each channel
     // its own row (with a channel-suffixed name), so drop the placeholder first.
     if (multichannel) placeholderRow.remove();
@@ -143,6 +161,10 @@ export async function addImage(state, file) {
     }
 
     syncUI(state);
+    // Let a method that produces results without user input (Threshold) run on the
+    // freshly loaded image(s). The classifier leaves this unset — a new image has no
+    // labels of its own and inference reruns on the next paint.
+    state.onImagesChanged?.(state);
 }
 
 /**
@@ -162,7 +184,7 @@ export async function addImage(state, file) {
  * @param {HTMLElement} args.row - The sidebar row already attached for this image.
  * @returns {Promise<boolean>} True on success, false if the backend failed to initialize.
  */
-async function buildImageEntry(state, { id, name, sourceName, fileSize, intensityArray, w, h, range, row }) {
+async function buildImageEntry(state, { id, name, sourceName, fileSize, intensityArray, w, h, range, row, channels = null }) {
     const container = document.createElement('div');
     container.className = 'image-container';
     container.style.width  = w + 'px';
@@ -204,7 +226,10 @@ async function buildImageEntry(state, { id, name, sourceName, fileSize, intensit
         return false;
     }
     await backend.allocateImage(w, h, intensityArray, range);
-    await backend.updateFeatures(intensityArray, state.sigma);
+    // The 8-channel Gaussian-derivative feature bank is only consumed by the
+    // random-forest classifier. Threshold and Cellpose never read it, so they
+    // leave state.computeFeatures falsy and skip the GPU work + memory here.
+    if (state.computeFeatures) await backend.updateFeatures(intensityArray, state.sigma);
 
     const imgState = {
         id,
@@ -223,6 +248,11 @@ async function buildImageEntry(state, { id, name, sourceName, fileSize, intensit
         windowLo: range.dataMin,
         windowHi: range.dataMax,
         labels: [],
+        // All raw channels of the source file, kept together only in non-split
+        // (Cellpose) loads; null for the classifier/threshold single-channel images.
+        // intensityArray above is channels[displayChannel] when this is set.
+        channels,
+        displayChannel: 0,
         gpuCanvas, labelCanvas, overlayCanvas, container,
         _cachedRect: null,
         _sidebarRow: row,
@@ -240,16 +270,14 @@ async function buildImageEntry(state, { id, name, sourceName, fileSize, intensit
         imgState._cachedRect = labelCanvas.getBoundingClientRect();
         state.isDrawing    = true;
         state.activeImageId = id;
-        const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
-        paint(state, imgState, e, radius);
+        paint(state, imgState, e, state.brushSize);
     });
     labelCanvas.addEventListener('pointermove', (e) => {
         if (!e.isPrimary) return;
         if (state.isSpaceDown) return;
         if (state.activePointerCount > 1) return; // a second finger joined — pause the stroke
         if (state.isDrawing && state.activeImageId === id && state.toolMode !== 'grab') {
-            const radius = parseInt(document.getElementById('brushSizeRange').value, 10);
-            paint(state, imgState, e, radius);
+            paint(state, imgState, e, state.brushSize);
         }
     });
     function endStroke(e) {
@@ -257,7 +285,9 @@ async function buildImageEntry(state, { id, name, sourceName, fileSize, intensit
         if (state.activeImageId === id) {
             state.isDrawing    = false;
             state.activeImageId = null;
-            scheduleTraining(state);
+            // Classifier hooks this to a debounced retrain; Threshold/Cellpose,
+            // which don't learn from labels, simply leave it unset.
+            state.onLabelsChanged?.(state);
         }
     }
     labelCanvas.addEventListener('pointerup', endStroke);
@@ -268,6 +298,27 @@ async function buildImageEntry(state, { id, name, sourceName, fileSize, intensit
 
     row.classList.remove('loading');
     return true;
+}
+
+/**
+ * Switches which raw channel a non-split (Cellpose) image displays: re-points its
+ * intensityArray/range at that channel and re-allocates the backend so the canvas,
+ * contrast window, and stats all operate on it. Re-allocating also resets the
+ * probability buffer to the "no overlay" state, clearing any prior segmentation.
+ * No-op for split images (channels === null).
+ * @param {Object} img - Image state entry.
+ * @param {number} idx - Channel index into img.channels.
+ */
+export async function setDisplayChannel(img, idx) {
+    if (!img.channels || idx === img.displayChannel) return;
+    const ch = img.channels[idx];
+    img.intensityArray = ch.intensityArray;
+    img.range = ch.range;
+    img.displayChannel = idx;
+    img.windowLo = ch.range.dataMin;
+    img.windowHi = ch.range.dataMax;
+    await img.backend.allocateImage(img.width, img.height, ch.intensityArray, ch.range);
+    img.backend.renderComposite();
 }
 
 /**
@@ -330,7 +381,10 @@ export function deleteImage(state, imgId) {
     state.images.splice(idx, 1);
     state.dirty = true;
 
-    if (labelCount > 0) scheduleTraining(state);
+    // Deleting a labeled image changes the classifier's training set; deleting any
+    // image changes the set the counts are computed over (Threshold/Cellpose).
+    if (labelCount > 0) state.onLabelsChanged?.(state);
+    state.onImagesChanged?.(state);
 
     syncUI(state);
 }

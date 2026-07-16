@@ -37,11 +37,13 @@ export function setTrainingIndicator(state, on) {
 
 /** Enables/labels the "Export Loaded Images" button by image count. @param {Object} state */
 export function updateExportButtonCount(state) {
-    const btn = document.getElementById('btnExportAll');
     const n   = state.images.length;
-    btn.disabled  = n === 0;
-    btn.innerText = n > 0 ? `Export Loaded Images (${n})` : 'Export Loaded Images';
-
+    const btn = document.getElementById('btnExportAll');
+    if (btn) {
+        btn.disabled  = n === 0;
+        btn.innerText = n > 0 ? `Export Loaded Images (${n})` : 'Export Loaded Images';
+    }
+    // .ilp export is classifier-only; absent in the Threshold/Cellpose apps.
     const ilpBtn = document.getElementById('btnExportIlp');
     if (ilpBtn) ilpBtn.disabled = n === 0;
 }
@@ -73,6 +75,11 @@ export function cancelCountup() {
  * @param {Object} state
  */
 export function updateSaveIndicator(state) {
+    // The unsaved-changes marker only means something for the classifier's .ilp
+    // save flow; Threshold/Cellpose have no project to save, so they leave
+    // state.saveIndicator unset and this is a no-op (title + DOM untouched).
+    if (!state.saveIndicator) return;
+
     const hasImages = state.images.length > 0;
     const dirty = hasImages && state.dirty;
 
@@ -122,45 +129,54 @@ export function setClassBadgesLoading() {
 }
 
 /**
- * Animates each class badge counting up from 0 to its final value, as if the objects
- * are being tallied live. Clears the loading placeholder. A single rAF loop drives all
- * badges; a subsequent retrain cancels it via cancelCountup (see setClassBadgesLoading).
- * @param {Array<number>} counts - Final per-class object counts.
+ * Animates a set of elements counting up from 0 to their target values, as if
+ * the objects are being tallied live. One shared rAF loop drives every target;
+ * a subsequent call to cancelCountup (e.g. a retrain starting) stops it. Bigger
+ * targets take proportionally longer, so a 1000-count and a 5-count don't finish
+ * at the same instant. This is the shared core behind both the classifier's
+ * per-class badges and the single-count readouts (Threshold/Cellpose).
+ * @param {Array<{el: HTMLElement|null, value: number}>} targets
  */
-export function animateClassStatBadges(counts) {
+export function animateCountUp(targets) {
     cancelCountup();
-    const badges = counts.map((_, i) => document.getElementById(`stat-class-${i}`));
-    badges.forEach(b => b && b.classList.remove('loading'));
-
-    // Bigger counts should take longer to count to.
-    const durations = counts.map((c) => Math.log10(c === 0 ? 1 : c) * 200)
     const start = performance.now();
     const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+    // Guard against a 0 duration (value <= 0): the target is 0 anyway, so it just
+    // shows 0 immediately rather than dividing by zero.
+    const durations = targets.map(({ value }) => Math.log10(value <= 0 ? 1 : value) * 200 || 1);
 
     const step = (now) => {
         let keepAnimating = false;
-
-        counts.forEach((count, i) => {
+        targets.forEach(({ el, value }, i) => {
             const t = Math.min(1, (now - start) / durations[i]);
-            const ease = easeOutCubic(t)
-            const badge = badges[i];
-            if (badge) badge.textContent = Math.round(count * ease);
-
-            // If any badge is still going, we need to request another frame
-            if (t < 1) {
-                keepAnimating = true;
-            }
+            if (el) el.textContent = Math.round(value * easeOutCubic(t));
+            if (t < 1) keepAnimating = true;
         });
-
-        // Only call requestAnimationFrame ONCE per tick
-        if (keepAnimating) {
-            _countupRaf = requestAnimationFrame(step);
-        } else {
-            _countupRaf = null;
-        }
+        _countupRaf = keepAnimating ? requestAnimationFrame(step) : null;
     };
-
     _countupRaf = requestAnimationFrame(step);
+}
+
+/**
+ * Animates the classifier's per-class count badges from 0 to their final values,
+ * clearing the loading placeholder first.
+ * @param {Array<number>} counts - Final per-class object counts.
+ */
+export function animateClassStatBadges(counts) {
+    const badges = counts.map((_, i) => document.getElementById(`stat-class-${i}`));
+    badges.forEach(b => b && b.classList.remove('loading'));
+    animateCountUp(counts.map((value, i) => ({ el: badges[i], value })));
+}
+
+/**
+ * Animates a single headline count readout (Threshold/Cellpose) up to `count`.
+ * @param {number} count - Final object/cell count.
+ * @param {string} [elId='stat-count'] - Id of the readout element.
+ */
+export function animateCount(count, elId = 'stat-count') {
+    const el = document.getElementById(elId);
+    if (el) el.classList.remove('loading');
+    animateCountUp([{ el, value: count }]);
 }
 
 /**
