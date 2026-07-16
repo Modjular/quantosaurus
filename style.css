@@ -1110,13 +1110,21 @@ hr.divider {
 }
 .count-readout-number.loading { opacity: 0.4; }
 
+/* Cellpose control panel: match the section's vertical rhythm so the count
+   readout, control groups, Run button, and progress line are evenly spaced,
+   and let the Run button stretch full-width like the Export button. */
+#cp-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
 /* ── Cellpose channel selectors + info tooltip ── */
 .cp-channel-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-top: 6px;
 }
 .cp-channel-row label { font-size: 13px; color: var(--text-muted); }
 .cp-channel-row select {

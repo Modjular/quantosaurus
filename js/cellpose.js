@@ -69,28 +69,37 @@ export async function ensureCellposeLoaded(onProgress) {
 async function fetchWeightsCached(onProgress) {
     const cache = ('caches' in self) ? await caches.open(CACHE_NAME) : null;
     let resp = cache ? await cache.match(WEIGHTS_URL) : null;
+    const fromCache = !!resp;
     if (!resp) {
         resp = await fetch(WEIGHTS_URL);
         if (!resp.ok) throw new Error(`Failed to fetch Cellpose weights (${resp.status})`);
-        if (cache) await cache.put(WEIGHTS_URL, resp.clone()); // cache the small compressed blob
     }
 
     // content-length is the compressed size; track progress on bytes downloaded.
+    // Read the (compressed) body ourselves so onProgress fires as bytes arrive.
+    // NB: don't cache.put a live response before reading — cache.put drains the
+    // whole body first, so the full download would finish before any progress.
     const total = Number(resp.headers.get('content-length')) || WEIGHTS_GZ_BYTES;
+    const reader = resp.body.getReader();
+    const chunks = [];
     let loaded = 0;
-    const counter = new TransformStream({
-        transform(chunk, controller) {
-            loaded += chunk.length;
-            onProgress?.(Math.min(1, loaded / total), loaded, total);
-            controller.enqueue(chunk);
-        },
-    });
-    const inflated = resp.body
-        .pipeThrough(counter)
-        .pipeThrough(new DecompressionStream('gzip'));
-    const buf = await new Response(inflated).arrayBuffer();
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        onProgress?.(Math.min(1, loaded / total), loaded, total);
+    }
     onProgress?.(1, loaded, total);
-    return buf;
+
+    // Persist the compressed blob to the cache from the buffered bytes (instant —
+    // no second network round-trip, and doesn't gate progress on completion).
+    const compressed = new Blob(chunks);
+    if (!fromCache && cache) await cache.put(WEIGHTS_URL, new Response(compressed, { headers: resp.headers }));
+
+    // Inflate the gzip stream to the raw weight bytes.
+    const inflated = compressed.stream().pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(inflated).arrayBuffer();
 }
 
 /**
