@@ -1,120 +1,136 @@
-// Cellpose (cyto3) segmentation wrapper. Owns a single module-level CellposeWebGPU
-// instance with its OWN WebGPU device, distinct from the per-image backends: each
-// image constructs its own device (see images.js:initializeBackend), so sharing
-// one image's device would re-upload the 26MB of weights per image. Cellpose's
-// output crosses back to the CPU as an Int32Array anyway, so a separate device is
-// free — the labels are then uploaded into each image's backend via setLabels.
+// Cellpose (cyto3) segmentation — main-thread client. The actual work (weight
+// loading, the WGSL forward pass, GPU flow dynamics, and the synchronous CPU mask
+// post-processing) runs in a dedicated Web Worker (js/cellpose.worker.js) so it never
+// freezes the UI: small diameters push ~3x the GPU work and ~4x the cells, and the
+// mask post-processing is single-threaded CPU that would otherwise block the tab for
+// seconds. This module just spawns the worker, relays load progress, and — once the
+// worker hands back an instance-label map — uploads it into each image's own backend
+// (setLabels bypasses CCL so touching cells stay separate) and counts.
 //
 // Vendored core is validated upstream (grayscale + 2-channel, AP@0.5 = 1.000 vs
-// PyTorch — see js/vendor/cellpose/). This module handles lazy/cached weight
-// loading (the prototype had neither) and the app orchestration.
-import { CellposeWebGPU } from './vendor/cellpose/cellpose_core.js';
+// PyTorch — see js/vendor/cellpose/). The worker owns the single CellposeWebGPU
+// instance (one device, weights loaded once); labels cross back as a transferable
+// Int32Array, so nothing GPU-side is shared with the per-image backends.
 import { NUM_CLASSES } from './config.js';
 import { decodeObjectStats } from './objects.js';
 import { setCentroids, renderCentroids } from './images.js';
 import { animateCount, setClassBadgesLoading } from './ui.js';
 
-// The weights are vendored gzip-compressed (~23.4MB) so the raw ~25.2MB blob stays
-// under static-host per-file limits (e.g. Cloudflare Pages' 25 MiB); we decompress
-// them client-side with the browser-native DecompressionStream while streaming.
-const WEIGHTS_URL = new URL('./vendor/cellpose/cyto3_weights.bin.gz', import.meta.url).href;
-const MANIFEST_URL = new URL('./vendor/cellpose/cyto3_manifest.json', import.meta.url).href;
-// Bump the version suffix if the vendored weights ever change, to invalidate the
-// old cached blob.
-const CACHE_NAME = 'quantosaurus-cellpose-v2';
-const WEIGHTS_GZ_BYTES = 24576400; // compressed size; progress fallback when content-length is absent
-const FOREGROUND_CLASS = 0;     // Cellpose fills the single foreground/overlay class
+const FOREGROUND_CLASS = 0; // Cellpose fills the single foreground/overlay class
 
-let _cp = null;          // CellposeWebGPU (owns its device); null until loaded
-let _loadPromise = null; // in-flight load shared by concurrent callers
+let _worker = null;         // the segmentation worker; spawned lazily
+let _loaded = false;        // true once the worker reports weights loaded
+let _loadPromise = null;    // in-flight load shared by concurrent callers
+let _loadWaiters = null;    // { resolve, reject } for the in-flight load
+let _onProgress = null;     // download-progress callback for the in-flight load
+let _reqSeq = 0;            // monotonic id pairing segment requests with results
+const _pending = new Map(); // reqId -> { resolve, reject }
 
 /** Whether this browser can run Cellpose (WebGPU-only; no WebGL2 fallback). */
 export function cellposeSupported() {
     return !!navigator.gpu;
 }
 
-/**
- * Lazily create the Cellpose instance and load its weights (~26MB), fetched once
- * and cached via the Cache API so later visits are instant. The first fetch is
- * streamed and reported through onProgress.
- * @param {(fraction:number, loaded:number, total:number)=>void} [onProgress]
- * @returns {Promise<CellposeWebGPU>}
- */
-export async function ensureCellposeLoaded(onProgress) {
-    if (_cp) return _cp;
-    if (_loadPromise) return _loadPromise;
-    _loadPromise = (async () => {
-        const cp = await CellposeWebGPU.create();
-        const [manifest, weights] = await Promise.all([
-            fetch(MANIFEST_URL).then(r => r.json()),
-            fetchWeightsCached(onProgress),
-        ]);
-        cp.loadWeights(manifest, weights);
-        _cp = cp;
-        return cp;
-    })();
-    try {
-        return await _loadPromise;
-    } catch (err) {
-        _loadPromise = null; // allow a retry after a failed load
-        throw err;
-    }
+/** Spawn (once) the module worker and route its messages to the pending promises. */
+function getWorker() {
+    if (_worker) return _worker;
+    _worker = new Worker(new URL('./cellpose.worker.js', import.meta.url), { type: 'module' });
+    _worker.onmessage = (e) => {
+        const msg = e.data;
+        switch (msg.type) {
+            case 'progress':
+                _onProgress?.(msg.frac, msg.loaded, msg.total);
+                break;
+            case 'loaded':
+                _loaded = true;
+                _loadWaiters?.resolve();
+                _loadWaiters = null;
+                break;
+            case 'load-error':
+                _loadWaiters?.reject(new Error(msg.message));
+                _loadWaiters = null;
+                break;
+            case 'seg-progress': {
+                _pending.get(msg.reqId)?.onProgress?.(msg.frac);
+                break;
+            }
+            case 'result': {
+                const p = _pending.get(msg.reqId);
+                if (p) { _pending.delete(msg.reqId); p.resolve(msg.labels); }
+                break;
+            }
+            case 'seg-error': {
+                const p = _pending.get(msg.reqId);
+                if (p) { _pending.delete(msg.reqId); p.reject(new Error(msg.message)); }
+                break;
+            }
+        }
+    };
+    // A worker-level crash (e.g. WebGPU device lost) rejects everything outstanding.
+    _worker.onerror = (e) => {
+        const err = new Error(e.message || 'Cellpose worker crashed');
+        _loadWaiters?.reject(err); _loadWaiters = null;
+        _loadPromise = null;
+        for (const p of _pending.values()) p.reject(err);
+        _pending.clear();
+    };
+    return _worker;
 }
 
 /**
- * Fetch the gzip-compressed weight blob (from the Cache API if present), reporting
- * progress against the compressed download, and inflate it with the browser-native
- * DecompressionStream. Returns the raw (decompressed) weight bytes.
+ * Lazily load the Cellpose weights (~26MB) in the worker, fetched once and cached via
+ * the Cache API so later visits are instant. The first fetch is streamed and reported
+ * through onProgress.
+ * @param {(fraction:number, loaded:number, total:number)=>void} [onProgress]
+ * @returns {Promise<void>}
  */
-async function fetchWeightsCached(onProgress) {
-    const cache = ('caches' in self) ? await caches.open(CACHE_NAME) : null;
-    let resp = cache ? await cache.match(WEIGHTS_URL) : null;
-    const fromCache = !!resp;
-    if (!resp) {
-        resp = await fetch(WEIGHTS_URL);
-        if (!resp.ok) throw new Error(`Failed to fetch Cellpose weights (${resp.status})`);
-    }
+export function ensureCellposeLoaded(onProgress) {
+    if (_loaded) return Promise.resolve();
+    if (onProgress) _onProgress = onProgress;
+    if (_loadPromise) return _loadPromise;
+    const worker = getWorker();
+    _loadPromise = new Promise((resolve, reject) => {
+        _loadWaiters = { resolve, reject };
+        worker.postMessage({ type: 'load' });
+    }).catch((err) => {
+        _loadPromise = null; // allow a retry after a failed load
+        throw err;
+    });
+    return _loadPromise;
+}
 
-    // content-length is the compressed size; track progress on bytes downloaded.
-    // Read the (compressed) body ourselves so onProgress fires as bytes arrive.
-    // NB: don't cache.put a live response before reading — cache.put drains the
-    // whole body first, so the full download would finish before any progress.
-    const total = Number(resp.headers.get('content-length')) || WEIGHTS_GZ_BYTES;
-    const reader = resp.body.getReader();
-    const chunks = [];
-    let loaded = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        loaded += value.length;
-        onProgress?.(Math.min(1, loaded / total), loaded, total);
-    }
-    onProgress?.(1, loaded, total);
-
-    // Persist the compressed blob to the cache from the buffered bytes (instant —
-    // no second network round-trip, and doesn't gate progress on completion).
-    const compressed = new Blob(chunks);
-    if (!fromCache && cache) await cache.put(WEIGHTS_URL, new Response(compressed, { headers: resp.headers }));
-
-    // Inflate the gzip stream to the raw weight bytes.
-    const inflated = compressed.stream().pipeThrough(new DecompressionStream('gzip'));
-    return await new Response(inflated).arrayBuffer();
+/** Hand one grayscale plane (+ optional nuclear channel) to the worker; resolves to its labels. */
+function segmentInWorker(gray, H, W, diameter, chan2, onProgress) {
+    const worker = getWorker();
+    const reqId = ++_reqSeq;
+    // Copy into fresh buffers we can transfer, so the app's own intensityArray (still
+    // needed for display/export) isn't detached. slice() copies once; the transfer
+    // then moves that copy without a second structured-clone copy.
+    const grayCopy = gray.slice();
+    const chan2Copy = chan2 ? chan2.slice() : null;
+    const transfer = [grayCopy.buffer];
+    if (chan2Copy) transfer.push(chan2Copy.buffer);
+    return new Promise((resolve, reject) => {
+        _pending.set(reqId, { resolve, reject, onProgress });
+        worker.postMessage({ type: 'segment', reqId, gray: grayCopy, H, W, diameter, chan2: chan2Copy }, transfer);
+    });
 }
 
 /**
  * Segments every loaded image with Cellpose, uploads the instance labels into each
  * backend (bypassing CCL so touching cells stay separate), paints a foreground
- * overlay, and reports the total cell count. Must be called after
- * ensureCellposeLoaded. This is Cellpose's analogue of trainAndPredictAll.
+ * overlay, and reports the total cell count. This is Cellpose's analogue of
+ * trainAndPredictAll. Loads the weights first if a caller skipped ensureCellposeLoaded.
  * @param {Object} state - Shared app state (reads state.images, state.cellpose).
  * @param {Object} [opts]
  * @param {(index:number, count:number, name:string)=>void} [opts.onImageStart]
  *   Fired before each image is segmented (for per-image progress).
+ * @param {(index:number, frac:number)=>void} [opts.onImageProgress]
+ *   Fired repeatedly while an image segments, with a 0..1 fraction (chunk-driven).
  * @returns {Promise<number>} Total cells across all images.
  */
-export async function runCellpose(state, { onImageStart } = {}) {
-    if (!_cp) throw new Error('Cellpose weights not loaded — call ensureCellposeLoaded first.');
+export async function runCellpose(state, { onImageStart, onImageProgress } = {}) {
+    await ensureCellposeLoaded();
     const { cytoChannel = 0, nucChannel = -1, diameter = 30 } = state.cellpose;
     setClassBadgesLoading();
 
@@ -133,8 +149,8 @@ export async function runCellpose(state, { onImageStart } = {}) {
             ? chans[nucChannel].intensityArray : null;
 
         // segmentImage takes (gray, H, W, opts) — height before width.
-        const { labels } = await _cp.segmentImage(cyto, img.height, img.width,
-            { diameter, chan2: nuc });
+        const labels = await segmentInWorker(cyto, img.height, img.width, diameter, nuc,
+            (frac) => onImageProgress?.(i, frac));
 
         img.backend.setLabels(labels);
         img.backend.setProbabilities(foregroundProbs(labels, img.width, img.height));

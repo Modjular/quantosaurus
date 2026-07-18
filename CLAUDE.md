@@ -80,7 +80,7 @@ two modules every page reuses:
 
 Every other module is a set of functions that take `state` (or a specific image's entry in `state.images`) as
 an explicit argument — no classes or singletons for app logic, only for the GPU backends, the
-`FlatRandomForest`, and the module-level `CellposeWebGPU` instance.
+`FlatRandomForest`, and the `CellposeWebGPU` instance (owned by the Cellpose worker, see below).
 
 **Behavior hooks decouple `images.js`/`ui.js` from any one method.** `images.js` no longer imports the
 classifier's `training.js`; instead it calls optional hooks each app sets on its `state`:
@@ -108,9 +108,9 @@ centroids, and exports — is method-agnostic. The three methods fill it differe
   for every labeled pixel, trains one shared `FlatRandomForest`, reruns `backend.runInference` per image.
 - Threshold (`js/threshold.js`): `computeOtsu` (or the manual slider) → `applyThreshold` writes a binary
   foreground map via `backend.setProbabilities`.
-- Cellpose (`js/cellpose.js`): `runCellpose` → `segmentImage` (WGSL network) → `backend.setLabels` uploads the
-  instance labels directly (bypassing CCL, so touching cells stay separate) plus a foreground overlay via
-  `setProbabilities`.
+- Cellpose (`js/cellpose.js`): `runCellpose` → `segmentImage` (WGSL network, run in the Cellpose worker) →
+  `backend.setLabels` uploads the instance labels directly (bypassing CCL, so touching cells stay separate)
+  plus a foreground overlay via `setProbabilities`.
 
 Counting then works the same for all three: connected-components (or the uploaded labels) + stats → object
 counts. `training.js:updateObjectCounts` does this for the classifier's per-class badges; `threshold.js` and
@@ -285,17 +285,29 @@ Otsu; in Manual mode the one normalized `[0,1]` slider value maps through each i
 `thresholdForImage`). `runThreshold` applies + recounts across all images. `invert` flips bright/dark
 foreground for brightfield.
 
-### Cellpose (`js/cellpose.js` + `js/vendor/cellpose/`)
+### Cellpose (`js/cellpose.js` + `js/cellpose.worker.js` + `js/vendor/cellpose/`)
 
 `runCellpose` segments every image with the pretrained cyto3 network, uploads the instance labels via
 `backend.setLabels` (bypassing CCL — the whole point is that touching cells stay separate), paints a foreground
-overlay, and counts. A **single module-level `CellposeWebGPU` owns its own WebGPU device** — because backends
-are per-image (one device each), sharing an image's device would re-upload the 26 MB of weights per image;
-Cellpose's output crosses back to the CPU as an `Int32Array` anyway, so a separate device is free.
-`ensureCellposeLoaded` lazily fetches the weights once, streamed with progress and cached via the Cache API.
+overlay, and counts.
+
+**The whole segmentation runs in a dedicated Web Worker (`js/cellpose.worker.js`).** The heavy work — the WGSL
+forward pass, the GPU flow dynamics, and especially the *synchronous CPU* mask post-processing
+(`cellpose_core.js:_getMasks`/`_maskFlowErrors`/`_filterMasks`) — would otherwise block the main thread and
+freeze the tab for seconds, and it scales badly with cell count: a small `diameter` upscales the working
+resolution (~3× the GPU work) and finds ~4× the cells. So `js/cellpose.js` is a thin **main-thread client** and
+the worker owns the **single `CellposeWebGPU` instance** (its own WebGPU device, weights loaded once). WebGPU,
+`fetch`, the Cache API, and `DecompressionStream` are all available in a module worker, so weight loading lives
+in the worker too (`ensureCellposeLoaded` posts a `load` message; download progress comes back as `progress`
+messages). Only small payloads cross the thread boundary: a grayscale plane in (copied via `.slice()` +
+transfer, so the app's own `intensityArray` isn't detached), an instance-label `Int32Array` out (transferred).
+A separate device is free anyway since Cellpose's output crosses back to the CPU — nothing GPU-side is shared
+with the per-image backends.
+
 Cellpose is **WebGPU-only** (`cellposeSupported()` gates the UI). Note `segmentImage`'s arg order is
 `(gray, H, W)` — height before width — and it takes raw intensities (it percentile-normalizes internally),
-with the optional nuclear channel as `opts.chan2`.
+with the optional nuclear channel as `opts.chan2`. `segmentImage` also caps the working resolution
+(`practicalCap`/device-limit clamp) so a too-small diameter can't blow past GPU memory.
 
 ### Vendored code (`js/vendor/`)
 
@@ -306,12 +318,22 @@ vendored third-party builds, not app code — don't hand-edit them. Both `io.js`
 needs CORS to fetch the vendored WASM even same-origin — running on the main thread sidesteps that.
 
 `js/vendor/cellpose/` holds the Cellpose port: `cellpose_core.js` (the `CellposeWebGPU` class — hand-written
-WGSL forward pass + flow dynamics, environment-agnostic) plus `cyto3_weights.bin` (~26 MB, BatchNorm folded)
-and `cyto3_manifest.json`. This has a real upstream that regenerates it and does **not** follow this repo's
-`state`/JSDoc conventions — treat it as vendored, copy verbatim rather than hand-editing. It's validated there
-against a PyTorch reference (grayscale + 2-channel cyto/nucleus, AP@0.5 = 1.000 on the WGSL forward + masks),
-which is why the Node tests here don't cover it. The `.onnx` export used only by the upstream comparison harness
-is deliberately **not** vendored (redundant 26 MB).
+WGSL forward pass + flow dynamics, environment-agnostic) plus `cyto3_weights.bin.gz` (~23.4 MB gzip; ~26 MB raw,
+BatchNorm folded — see the ilp/gzip note above) and `cyto3_manifest.json`. **This repo is the source of truth —
+there is no external upstream to sync from, so edit `cellpose_core.js` here directly** (it just deliberately
+does **not** follow this repo's `state`/JSDoc conventions, and stays environment-agnostic so it can run
+headless). It's validated against a PyTorch reference (grayscale + 2-channel cyto/nucleus, AP@0.5 = 1.000 on the
+WGSL forward + masks), which is why the Node tests here don't cover it — so if you change the forward/dynamics,
+re-validate against that reference. **`js/vendor/cellpose/README.md` documents the port's capabilities and
+limits** (WebGPU-only, 2D-only, cyto3-only, the whole-image working-resolution cap, and CPU mask
+post-processing). The known ceiling is the **whole-image working-resolution cap** (no tiling): small diameters
+lose accuracy and large images can't run at full res. The freeze that a big run used to cause is handled by
+**chunking the GPU submits** — `forwardFromInput` and `computeMasksGPU` each split their work into several
+submits with a `queue.onSubmittedWorkDone()` yield between, so the GPU process can paint a compositor frame
+instead of the tab freezing for the whole multi-second pass (don't re-collapse these into one submit). The
+larger fix — **tiling** (overlapping tiles + taper-blended stitch), which would remove the cap, restore
+small-cell accuracy, make submits inherently small, and enable out-of-core/`.zarr` inputs — is deferred future
+work (noted in the README and at the cap site in `cellpose_core.js`).
 
 ## Pull Request Template
 

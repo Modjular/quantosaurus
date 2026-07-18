@@ -483,14 +483,38 @@ export class CellposeWebGPU {
   }
 
   // Run CPnet forward on a preprocessed input [2,H,W]. Returns Float32Array [3,H,W].
-  async forwardFromInput(inputF32, H, W) {
+  // onSubmit(done, total) is called after each chunk submit (see flush), for progress
+  // reporting; total is the fixed flush count below. Optional.
+  async forwardFromInput(inputF32, H, W, onSubmit) {
     const d = this.device;
     const inBuf = this.mkStorage(2 * H * W);
     d.queue.writeBuffer(inBuf, 0, inputF32);
 
-    // cp006: whole forward in a SINGLE command encoder — encoder, GPU style
-    // (normalize + projections), decoder, output head. No mid-forward CPU stall.
-    const enc = d.createCommandEncoder();
+    // The forward is split into several GPU submissions with a yield between each
+    // (flush), instead of one big submit. Recording the whole UNet into a single
+    // command buffer makes it run as ONE multi-second GPU task that monopolizes the
+    // GPU process' main thread — the compositor can't paint until it returns, so the
+    // browser tab freezes for the entire forward pass (confirmed via a perf trace: a
+    // ~7s CrGpuMain task at small diameters, which upscale the working resolution).
+    // Flushing at each resolution level and awaiting completion lets the GPU service a
+    // compositor frame between chunks, keeping the tab responsive. Pool buffers persist
+    // until releaseAll(), so the intermediates stay valid across submits — only the
+    // command encoder is swapped. (The larger fix — tiling so each submit is inherently
+    // small, which also enables out-of-core/.zarr inputs — is noted as future work in
+    // this directory's README and in CLAUDE.md; chunking is the localized freeze fix.)
+    // Keep TOTAL_FLUSHES in sync with the flush() calls below: 4 encoder levels + 1
+    // style + 1 first-resup + 3 decoder levels = 9. (The final output-head submit is
+    // separate and reported as 100% by segmentImage.)
+    const TOTAL_FLUSHES = 9;
+    let submitted = 0;
+    let enc = d.createCommandEncoder();
+    const flush = async () => {
+      d.queue.submit([enc.finish()]);
+      await d.queue.onSubmittedWorkDone(); // yield: gives the compositor a frame
+      onSubmit?.(++submitted, TOTAL_FLUSHES);
+      enc = d.createCommandEncoder();
+    };
+
     const xd = [];
     let y = inBuf, hy = H, wy = W;
     for (let n = 0; n < 4; n++) {
@@ -501,17 +525,20 @@ export class CellposeWebGPU {
         y = pooled;
       }
       xd[n] = this.resdown(enc, n, y, NBASE[n], NBASE[n + 1], hy, wy);
+      await flush(); // one submit per encoder level
     }
     // style vector on the GPU (global-avg-pool -> L2 normalize)
     const styleRaw = this.mkStorage(256);
     this.gap(enc, xd[3], styleRaw, hy, wy, 256);
     const styleBuf = this.mkStorage(256);
     this.normStyle(enc, styleRaw, styleBuf);
+    await flush();
 
     // decoder — resup blocks compute their effShift on the GPU from styleBuf
     // xd resolutions: xd[3] at (hy,wy); xd[2] at (2h,2w); xd[1] at (4h,4w); xd[0] at (8h,8w)
     const res = [[H, W], [H >> 1, W >> 1], [H >> 2, W >> 2], [H >> 3, W >> 3]];
     let x = this.resup(enc, 3, xd[3], xd[3], styleBuf, 256, 256, res[3][0], res[3][1]);
+    await flush();
     const Cup = { 2: [256, 128], 1: [128, 64], 0: [64, 32] };
     let ch = 256, ch_h = res[3][0], ch_w = res[3][1];
     for (const n of [2, 1, 0]) {
@@ -520,6 +547,7 @@ export class CellposeWebGPU {
       const [cin, cout] = Cup[n];
       x = this.resup(enc, n, upBuf, xd[n], styleBuf, cin, cout, nh, nw);
       ch = cout; ch_h = nh; ch_w = nw;
+      await flush(); // one submit per decoder level
     }
     // output head: batchconv 32->3, 1x1, relu
     const outBuf = this.mkStorage(3 * H * W);
@@ -565,16 +593,31 @@ export class CellposeWebGPU {
     d.queue.writeBuffer(posBuf, 0, pos0);
     const nwg = Math.ceil(npts / 256), nwgx = Math.min(nwg, 65535), nwgy = Math.ceil(nwg / nwgx);
     const uni = d.createBuffer({ size: 24, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    d.queue.writeBuffer(uni, 0, new Uint32Array([npts, niter, H, W, nwgx, 0]));
     const bg = d.createBindGroup({ layout: this.pSteps.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uni } }, { binding: 1, resource: { buffer: dyBuf } },
       { binding: 2, resource: { buffer: dxBuf } }, { binding: 3, resource: { buffer: posBuf } }] });
-    const enc = d.createCommandEncoder();
-    const pass = enc.beginComputePass(); pass.setPipeline(this.pSteps); pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(nwgx, nwgy); pass.end();
+    // Integrate in small step-batches instead of one dispatch of all niter steps: a
+    // single dispatch of every step runs as one multi-second GPU task that freezes the
+    // tab (same cause as the forward pass — see forwardFromInput). The shader reads and
+    // writes pos in place, so each batch continues from the previous batch's positions;
+    // submitting + awaiting between batches lets the GPU paint a compositor frame.
+    const STEP_BATCH = 20;
+    const nBatches = Math.ceil(niter / STEP_BATCH);
+    let batch = 0;
+    for (let done = 0; done < niter; done += STEP_BATCH) {
+      const steps = Math.min(STEP_BATCH, niter - done);
+      d.queue.writeBuffer(uni, 0, new Uint32Array([npts, steps, H, W, nwgx, 0]));
+      const enc = d.createCommandEncoder();
+      const pass = enc.beginComputePass(); pass.setPipeline(this.pSteps); pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(nwgx, nwgy); pass.end();
+      d.queue.submit([enc.finish()]);
+      await d.queue.onSubmittedWorkDone(); // yield: gives the compositor a frame
+      opts.onProgress?.(++batch, nBatches);
+    }
     const rb = d.createBuffer({ size: 2 * npts * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    enc.copyBufferToBuffer(posBuf, 0, rb, 0, 2 * npts * 4);
-    d.queue.submit([enc.finish()]);
+    const encRb = d.createCommandEncoder();
+    encRb.copyBufferToBuffer(posBuf, 0, rb, 0, 2 * npts * 4);
+    d.queue.submit([encRb.finish()]);
     await rb.mapAsync(GPUMapMode.READ);
     const posF = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap();
     dyBuf.destroy(); dxBuf.destroy(); posBuf.destroy(); uni.destroy(); rb.destroy();
@@ -791,9 +834,12 @@ export class CellposeWebGPU {
   // 30/diameter before the forward pass (so cells are ~30px, matching training), then the
   // flow/cellprob fields are resized back to (H,W) before dynamics run at full resolution
   // — mirrors cellpose's default resample=True eval() path.
+  // opts.onProgress(frac) — optional 0..1 progress callback for UI feedback, driven by
+  // the forward-pass and dynamics chunk counts (see forwardFromInput/computeMasksGPU).
   async segmentImage(gray, H, W, opts = {}) {
     const t0 = now();
     const { diameter = 30, chan2 = null } = opts;
+    const report = opts.onProgress;
     const rescale = 30 / (diameter > 0 ? diameter : 30);
     // `gray` is the channel to segment (cytoplasm); `opts.chan2` is the optional
     // nuclear channel, same [H,W] layout. Each is normalized independently, then
@@ -812,6 +858,13 @@ export class CellposeWebGPU {
       // fails silently (invalid buffer, garbage/zero output) or crashes outright.
       const limBytes = Math.min(this.device.limits.maxBufferSize, this.device.limits.maxStorageBufferBindingSize);
       const byDeviceLimit = Math.floor(limBytes * 0.5 / (64 * 4));
+      // FUTURE (tiling): this whole-image cap is why small diameters lose resolution —
+      // the image is downscaled to fit one forward pass in GPU memory. Tiling the image
+      // (overlapping tiles through the network, then a taper-blended stitch of the flow
+      // /cellprob fields) would remove the cap, preserve small-cell accuracy, and enable
+      // out-of-core/.zarr inputs. See this directory's README and CLAUDE.md. Until then
+      // the runtime freeze is handled by chunking the submits (forwardFromInput), not by
+      // lowering this cap (which would trade away accuracy).
       const practicalCap = 3_000_000; // ~5x the largest tested sample image; keeps runtime sane too
       const maxPixels = Math.min(byDeviceLimit, practicalCap);
       if (H2 * W2 > maxPixels) {
@@ -833,11 +886,14 @@ export class CellposeWebGPU {
     // clamped tiny diameter — still get enough iterations to converge.
     const effRescale = Math.sqrt((H2 * W2) / (H * W));
     const niter = Math.max(1, Math.round((opts.niter ?? 200) / effRescale));
-    const dynOpts = { ...opts, niter };
+    // Progress phases (rough, for UI feedback): forward ~0..0.75, dynamics ~0.75..0.95;
+    // the trailing synchronous CPU mask assembly covers the last ~0.05 (report(1) below).
+    const dynOpts = { ...opts, niter, onProgress: (done, total) => report?.(0.75 + 0.20 * (done / total)) };
     const input = padTo16(ch0, ch1, H2, W2);
     const { Hp, Wp } = input;
     const t1 = now();
-    const { output } = await this.forwardFromInput(input.data, Hp, Wp);
+    const { output } = await this.forwardFromInput(input.data, Hp, Wp,
+      (done, total) => report?.(0.75 * (done / total)));
     const t2 = now();
     // crop dP/cellprob to the working resolution (H2,W2)
     const dP2 = new Float32Array(2 * H2 * W2), cellprob2 = new Float32Array(H2 * W2);
@@ -855,6 +911,7 @@ export class CellposeWebGPU {
       cellprob = resizeBilinear(cellprob2, H2, W2, H, W);
     }
     const labels = await this.computeMasksGPU(dP, cellprob, H, W, dynOpts);
+    report?.(1);
     const t3 = now();
     return { labels, output, dP, cellprob, H, W,
       timings: { preprocess: t1 - t0, forward: t2 - t1, dynamics: t3 - t2, total: t3 - t0 } };

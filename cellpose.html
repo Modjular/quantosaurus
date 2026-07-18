@@ -260,9 +260,14 @@
                 await ensureCellposeLoaded((frac) => {
                     progress.textContent = `Downloading model… ${Math.round(frac * 100)}%`;
                 });
+                let segLabel = '';
                 await runCellpose(state, {
                     onImageStart: (i, count, name) => {
-                        progress.textContent = `Segmenting ${i + 1}/${count}: ${name}…`;
+                        segLabel = `Segmenting ${i + 1}/${count}: ${name}`;
+                        progress.textContent = `${segLabel}…`;
+                    },
+                    onImageProgress: (i, frac) => {
+                        progress.textContent = `${segLabel}… ${Math.round(frac * 100)}%`;
                     },
                 });
                 state.hasRun = true;
